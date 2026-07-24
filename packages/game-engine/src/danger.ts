@@ -13,11 +13,19 @@ export function boardTouchesTop(state: SimulationState): boolean {
   )
 }
 
-function rescuingClearIsActive(state: SimulationState): boolean {
-  return (
-    state.phase !== 'idle' &&
-    state.lastClearEvent?.touchedTop === true
-  )
+// The danger clock only runs while the board is settled and the player can
+// actually act on it. Every resolution phase holds it: flash, clear, garbage
+// conversion, garbage fall, and fall delay — which applies gravity and can
+// cascade straight back into flashing, so a whole chain resolves on a frozen
+// clock.
+//
+// Swaps deliberately do not hold it. A swap is player input rather than the
+// board settling, and pausing on it would let continuous swapping freeze the
+// countdown indefinitely. Clears cannot be abused the same way: the stack
+// does not rise during danger, so every clear consumes panels and moves the
+// board towards safety.
+function boardIsSettling(state: SimulationState): boolean {
+  return state.phase !== 'idle'
 }
 
 export function advanceDangerState(
@@ -43,7 +51,7 @@ export function advanceDangerState(
     }
   }
 
-  if (rescuingClearIsActive(state)) {
+  if (boardIsSettling(state)) {
     return state
   }
 
