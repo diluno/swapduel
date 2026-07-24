@@ -257,6 +257,9 @@ function playerStatus(player: PlayerSession): string {
 .join-card,
 .waiting-card {
   width: min(100%, 520px);
+  /* As grid items these default to a min-content floor, which the long
+     invitation URL pushes past the viewport on narrow screens. */
+  min-width: 0;
   padding: clamp(24px, 7vw, 36px);
   border-radius: 28px;
   background: rgba(255, 255, 255, 0.94);
@@ -459,7 +462,8 @@ button:disabled {
 
 .player-list li {
   display: grid;
-  grid-template-columns: 42px 1fr 12px;
+  /* minmax(0, 1fr) so a long unbroken display name cannot widen the row. */
+  grid-template-columns: 42px minmax(0, 1fr) 12px;
   align-items: center;
   gap: 12px;
   min-height: 72px;
@@ -500,6 +504,7 @@ button:disabled {
   color: #6e5648;
   font-family: "Fredoka", sans-serif;
   font-weight: 600;
+  overflow-wrap: anywhere;
 }
 
 .player-list small {
