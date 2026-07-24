@@ -81,6 +81,13 @@ const activePreparation = computed(() =>
     ? roundPreparation.value
     : null,
 )
+// Landing here without a preparation is usually a back-navigation returning
+// mid-match, where the socket has not delivered the room yet. That is a
+// reconnect in progress, not a missing round, so hold off on the dead-end
+// error until we have actually heard from the server.
+const rejoiningMatch = computed(
+  () => session.value !== null && (!connected.value || roomState.value === null),
+)
 const activeStarting = computed(() =>
   roundStarting.value?.matchId === activePreparation.value?.matchId
     ? roundStarting.value
@@ -908,7 +915,18 @@ onBeforeUnmount(() => {
 
 <template>
   <main class="game-shell">
-    <section v-if="activePreparation === null" class="missing-card">
+    <section
+      v-if="activePreparation === null && rejoiningMatch"
+      class="missing-card"
+    >
+      <p>Rejoining</p>
+      <h1>Finding your match…</h1>
+    </section>
+
+    <section
+      v-else-if="activePreparation === null"
+      class="missing-card"
+    >
       <p>Match unavailable</p>
       <h1>Round setup missing</h1>
       <NuxtLink :to="`/room/${roomState?.roomCode ?? ''}`">

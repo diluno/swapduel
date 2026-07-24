@@ -246,6 +246,12 @@ export function useRoomSocket() {
       const parsed = roomSessionSchema.safeParse(JSON.parse(serialized))
       if (!parsed.success) return null
       session.value = parsed.data
+      // Restore the room alongside the session, mirroring persistSession.
+      // Without this, roomState stays null until the socket delivers
+      // room:state, and anything gating on the room sees nothing on load.
+      // Guarded above by the session.value !== null early return, so this
+      // never clobbers live state with the stored copy.
+      roomState.value = parsed.data.roomState
       return parsed.data
     } catch {
       return null

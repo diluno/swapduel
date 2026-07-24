@@ -59,12 +59,18 @@ onMounted(() => {
   displayName.value = getSavedDisplayName()
 })
 
+// Watches the room as well as the preparation. On a fresh load the
+// preparation is restored synchronously while the room arrives later over
+// the socket; watching only the preparation meant this fired once against a
+// null room, failed, and never ran again — stranding a player in the waiting
+// room during their own live match after a back-navigation.
 watch(
-  roundPreparation,
-  async (preparation) => {
+  [roundPreparation, activeRoom],
+  async ([preparation, room]) => {
     if (
       preparation !== null &&
-      preparation.roomId === activeRoom.value?.roomId
+      room !== null &&
+      preparation.roomId === room.roomId
     ) {
       await navigateTo(`/match/${preparation.matchId}`)
     }
