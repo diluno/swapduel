@@ -20,6 +20,12 @@ export {
 export { findMatches, hasMatches } from './matches'
 export { nextRandom, randomInteger, seedToRandomState } from './random'
 export {
+  isSimulationState,
+  restoreSimulationSnapshot,
+  serializeSimulationSnapshot,
+  type SimulationSnapshotOptions,
+} from './recovery'
+export {
   advanceSimulation,
   createSimulation,
   drainOutgoingAttacks,

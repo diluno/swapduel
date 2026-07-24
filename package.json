@@ -6,9 +6,11 @@
     "node": ">=22"
   },
   "scripts": {
+    "build": "pnpm --filter @swapduel/web generate",
     "dev": "pnpm --filter @swapduel/web dev",
     "dev:server": "pnpm --filter @swapduel/server dev",
-    "test": "pnpm --filter @swapduel/game-engine test",
+    "start": "pnpm --filter @swapduel/server start",
+    "test": "pnpm --filter @swapduel/game-engine test && pnpm --filter @swapduel/server test",
     "test:watch": "pnpm --filter @swapduel/game-engine test:watch",
     "typecheck": "pnpm -r typecheck"
   },

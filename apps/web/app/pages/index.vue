@@ -1,5 +1,15 @@
 <script setup lang="ts">
 const isDevelopment = import.meta.dev
+const playerName = ref('')
+const roomCode = ref('')
+const busy = ref(false)
+const {
+  connected,
+  errorMessage,
+  createRoom,
+  joinRoom,
+  getSavedDisplayName,
+} = useRoomSocket()
 
 useHead({
   title: 'Swapduel',
@@ -10,6 +20,28 @@ useHead({
     },
   ],
 })
+
+onMounted(() => {
+  playerName.value = getSavedDisplayName()
+})
+
+async function createPrivateMatch(): Promise<void> {
+  busy.value = true
+  const session = await createRoom(playerName.value)
+  busy.value = false
+  if (session !== null) {
+    await navigateTo(`/room/${session.roomState.roomCode}`)
+  }
+}
+
+async function joinPrivateMatch(): Promise<void> {
+  busy.value = true
+  const session = await joinRoom(roomCode.value, playerName.value)
+  busy.value = false
+  if (session !== null) {
+    await navigateTo(`/room/${session.roomState.roomCode}`)
+  }
+}
 </script>
 
 <template>
@@ -24,12 +56,63 @@ useHead({
       <p class="intro">
         Build chains, send trouble, and keep your stack below the line.
       </p>
-      <div class="notice">
-        <strong>Engine prototype underway.</strong>
-        Private rooms will arrive after the offline mechanics are complete.
-      </div>
+      <form class="match-form" @submit.prevent="createPrivateMatch">
+        <label>
+          <span>Your name</span>
+          <input
+            v-model="playerName"
+            name="displayName"
+            maxlength="20"
+            autocomplete="nickname"
+            placeholder="Peachy player"
+            required
+          >
+        </label>
+
+        <button class="primary-action" type="submit" :disabled="busy">
+          {{ busy ? 'Connecting…' : 'Create private match' }}
+        </button>
+
+        <div class="divider"><span>or join a friend</span></div>
+
+        <label>
+          <span>Room code</span>
+          <input
+            v-model="roomCode"
+            class="code-input"
+            name="roomCode"
+            maxlength="6"
+            autocapitalize="characters"
+            autocomplete="off"
+            placeholder="K7M4DP"
+          >
+        </label>
+
+        <button
+          class="secondary-action"
+          type="button"
+          :disabled="busy"
+          @click="joinPrivateMatch"
+        >
+          Join match
+        </button>
+      </form>
+
+      <p v-if="errorMessage" class="form-message" role="alert">
+        {{ errorMessage }}
+      </p>
+      <p class="connection-status" aria-live="polite">
+        <span :class="{ online: connected }" />
+        {{ connected ? 'Game server connected' : 'Connecting to game server…' }}
+      </p>
+
+      <p class="instructions">
+        No account needed. Create a room, share its six-character code, and
+        challenge one friend.
+      </p>
+
       <NuxtLink v-if="isDevelopment" class="lab-link" to="/lab">
-        Open game laboratory
+        Open the board laboratory
       </NuxtLink>
     </section>
   </main>
@@ -89,27 +172,60 @@ h1 {
   line-height: 1.6;
 }
 
-.notice {
-  padding: 17px 18px;
-  border-radius: 18px;
-  background: #fff4e8;
-  color: #a38b7c;
-  font-size: 0.9rem;
-  font-weight: 600;
-  line-height: 1.55;
-}
-
-.notice strong {
-  display: block;
-  color: #6e5648;
-  font-weight: 800;
-}
-
-.lab-link {
+.match-form {
   display: grid;
+  gap: 12px;
+  text-align: left;
+}
+
+.match-form label {
+  display: grid;
+  gap: 6px;
+}
+
+.match-form label span {
+  color: #c99b82;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.match-form input {
+  width: 100%;
+  min-height: 50px;
+  padding: 0 16px;
+  border: 2px solid #f5e3d3;
+  border-radius: 16px;
+  outline: 0;
+  background: #fffaf5;
+  color: #6e5648;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.match-form input:focus {
+  border-color: #ffb59a;
+  box-shadow: 0 0 0 3px rgba(255, 181, 154, 0.2);
+}
+
+.code-input {
+  font-family: "Fredoka", sans-serif;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+}
+
+.primary-action,
+.secondary-action {
+  width: 100%;
+  border: 0;
+  font-family: "Fredoka", sans-serif;
+  cursor: pointer;
+}
+
+.primary-action {
   min-height: 60px;
-  margin-top: 20px;
-  place-items: center;
+  margin-top: 4px;
   border-radius: 32px;
   background: linear-gradient(180deg, #ff9a6e 0%, #ff7e54 60%, #f26a40 100%);
   box-shadow:
@@ -118,22 +234,92 @@ h1 {
     0 6px 0 #d95832,
     0 12px 18px rgba(217, 88, 50, 0.3);
   color: #fff;
-  font-family: "Fredoka", sans-serif;
-  font-size: 1.1rem;
+  font-size: 1.08rem;
   font-weight: 600;
-  text-decoration: none;
-  transition:
-    transform 120ms ease,
-    box-shadow 120ms ease;
 }
 
-.lab-link:active {
-  transform: translateY(3px);
+.secondary-action {
+  min-height: 50px;
+  border: 1px solid #f3dfcf;
+  border-radius: 26px;
+  background: #fff4e8;
   box-shadow:
-    inset 0 3px 0 rgba(255, 255, 255, 0.45),
-    inset 0 -3px 0 rgba(110, 86, 72, 0.1),
-    0 3px 0 #d95832,
-    0 7px 12px rgba(217, 88, 50, 0.24);
+    inset 0 2px 0 rgba(255, 255, 255, 0.9),
+    0 3px 7px rgba(110, 86, 72, 0.09);
+  color: #7a6557;
+  font-weight: 600;
+}
+
+.primary-action:disabled,
+.secondary-action:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+
+.divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 0 0;
+  color: #c9b4a5;
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.divider::before,
+.divider::after {
+  height: 1px;
+  flex: 1;
+  background: #f5e3d3;
+  content: "";
+}
+
+.form-message {
+  margin: 14px 0 0;
+  color: #f0606c;
+  font-size: 0.85rem;
+  font-weight: 800;
+}
+
+.connection-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  margin: 16px 0 0;
+  color: #bc8e72;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.connection-status span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #c9b4a5;
+}
+
+.connection-status span.online {
+  background: #5fd0a0;
+  box-shadow: 0 0 0 3px rgba(95, 208, 160, 0.16);
+}
+
+.instructions {
+  margin: 16px 0 0;
+  color: #a38b7c;
+  font-size: 0.82rem;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.lab-link {
+  display: inline-block;
+  min-height: 44px;
+  padding-top: 14px;
+  color: #bc8e72;
+  font-size: 0.78rem;
+  font-weight: 800;
 }
 
 .decor-panel {
@@ -187,9 +373,4 @@ h1 {
   font-size: 0.9rem;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .lab-link {
-    transition: none;
-  }
-}
 </style>

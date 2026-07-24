@@ -1,9 +1,47 @@
 # Swapduel
 
 Swapduel is a mobile-first, private two-player rising-stack puzzle game. The
-repository currently contains the deterministic offline engine and a
-development laboratory; online rooms and versus networking are the next major
-phase.
+repository contains the deterministic offline engine, a development
+laboratory, and the first online-room slice: create, join, reconnect, and
+waiting-room ready state. Hosts can also initiate an authoritative match
+handshake that waits for both clients before issuing one synchronized
+countdown timestamp. The portrait match screen runs the local deterministic
+board and relays validated opponent snapshots at approximately 10 Hz.
+Combo, chain, and shock attacks are assigned a server sequence, delivered only
+to the opponent, deduplicated, inserted into the deterministic garbage queue,
+and acknowledged by the receiving client. Unconfirmed sends survive temporary
+client disconnects, while the server retries unacknowledged deliveries and
+replays them to a player's replacement socket after reconnect.
+Top-outs are resolved after a 150 ms simultaneous-loss window. The server owns
+round scores, replays draws with a fresh seed, waits for both players between
+rounds, and ends the match when one player reaches two wins.
+Completed matches support same-room rematches after both players confirm. Each
+rematch gets new match and round identifiers, resets scores, and swaps player
+slots for symmetry.
+Live rounds tolerate sub-second connection blips. Longer disconnects pause
+both boards, allow 30 seconds for recovery, and resume from one shared
+three-second countdown; an expired recovery window awards the round.
+Waiting-room slots remain reserved for five minutes after disconnecting.
+Abandoned rooms and rooms without authenticated activity for two hours are
+removed with their pending server timers and stale client sessions.
+Room creation, joins, reconnection attempts, gameplay control messages,
+snapshots, pings, and malformed events have separate bounded in-memory rate
+limits. Shared payload schemas reject unknown fields, oversized collections,
+unsafe numeric ranges, and control characters in display names.
+When a match tab moves into the background, rendering and fixed-step simulation
+stop while Socket.IO continues buffering match events. Returning to the
+foreground recalibrates against the lowest-latency server-time sample and
+resets frame timing before play continues, preventing suspended time from being
+processed as a burst.
+Active simulations are also serialized to session storage every 500 ms and
+when the page is suspended. A quick reload can restore only a fresh, versioned
+snapshot for the exact match, round, and seed; malformed or stale state falls
+back to deterministic round creation.
+Clients report a checksum every two simulated seconds. The server retains a
+bounded per-player timeline, ignores duplicates and stale sequences, and logs
+plus returns a visible diagnostic only if the same player reports conflicting
+checksums for one simulation step. Opponents are intentionally never compared
+because their independently controlled boards are expected to diverge.
 
 ## Requirements
 
@@ -18,6 +56,32 @@ pnpm test
 pnpm dev
 ```
 
+In development, the web app connects to the realtime server at
+`http://localhost:3001`. Override that with `NUXT_PUBLIC_SOCKET_URL` when the
+two processes use different origins.
+
+## Production deployment
+
+The production build generates the Nuxt client as static assets and serves
+them from the Express and Socket.IO process. This keeps the website and
+realtime connection on one origin:
+
+```bash
+pnpm build
+NODE_ENV=production pnpm start
+```
+
+The included `Dockerfile` and `railway.json` deploy the workspace as one
+long-running Railway service with a `/health` deployment check. Connect this
+repository to a Railway service, keep the service root at `/`, and enable
+public networking. Railway supplies `PORT`; no application variables are
+required for the same-origin setup.
+
+Set `APP_ORIGIN` and `NUXT_PUBLIC_SOCKET_URL` only when the web client is hosted
+on a different origin. Production defaults to trusting one reverse-proxy hop
+for per-address rate limits; set `TRUST_PROXY=false` if the service is exposed
+directly.
+
 Open `/lab` in development to use the offline board laboratory. It supports
 swipe and tap swapping, pause/step controls, manual raising, deterministic seed
 reset, and JSON import/export. The lab route returns a 404 in production.
@@ -26,7 +90,7 @@ reset, and JSON import/export. The lab route returns a 404 in production.
 
 ```text
 apps/web                 Nuxt 4 client and development laboratory
-apps/server              Socket.IO server entry point (room logic pending)
+apps/server              Socket.IO server and in-memory room state
 packages/contracts       Shared, Zod-validated network contracts
 packages/game-engine     Pure deterministic TypeScript simulation
 ```
@@ -57,4 +121,4 @@ below the 12 visible cell rows. All simulation timing and tuning values live in
 - Danger entry, rescue pauses, grace timeout, and top-out
 - Deterministic checksums and JSON-serializable simulation state
 
-Online rooms and reconnection are not implemented yet.
+The next visual networking slice is interpolating opponent-board snapshots.

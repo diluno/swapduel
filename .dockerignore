@@ -1,0 +1,14 @@
+.git
+.github
+.nuxt
+.output
+.pnpm-store
+node_modules
+coverage
+playwright-report
+test-results
+*.log
+.env
+.env.*
+Style Guide.html
+swapduel-mvp-spec.md
