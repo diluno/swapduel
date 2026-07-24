@@ -30,6 +30,20 @@ body,
   margin: 0;
 }
 
+/* The match view fills the viewport exactly and must never scroll. Without
+   this the document can end up taller than the visible area on mobile — iOS
+   resolves the min-height: 100% chain above against the large viewport while
+   100dvh tracks the dynamic one — leaving the board draggable up and down
+   mid-game. Applied via htmlAttrs on the match page, so it lifts on leaving. */
+html.viewport-locked,
+html.viewport-locked body,
+html.viewport-locked #__nuxt {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
 body {
   min-width: 320px;
   background:

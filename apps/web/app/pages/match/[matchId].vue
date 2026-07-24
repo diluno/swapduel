@@ -255,7 +255,12 @@ let activePointer:
     }
   | null = null
 
-useHead({ title: 'Live match · Swapduel' })
+useHead({
+  title: 'Live match · Swapduel',
+  // Locks the document to the viewport for the duration of the match; unhead
+  // removes it again on leaving the page.
+  htmlAttrs: { class: 'viewport-locked' },
+})
 
 function clearLocalSimulationSnapshot(): void {
   if (import.meta.client) {
@@ -1119,7 +1124,9 @@ onBeforeUnmount(() => {
 <style scoped>
 .game-shell {
   height: 100dvh;
-  min-height: 520px;
+  /* Capped at the viewport: a bare 520px floor made the shell taller than a
+     landscape phone and scrolled the page. The layout compresses instead. */
+  min-height: min(520px, 100dvh);
   overflow: hidden;
   padding:
     max(10px, env(safe-area-inset-top))
