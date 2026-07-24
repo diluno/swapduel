@@ -60,6 +60,16 @@ const {
   readyForNextRound,
   requestRematch,
 } = useRoomSocket()
+const {
+  soundEnabled,
+  unlockAudio,
+  playSwap,
+  playClear,
+  playGarbageReceived,
+  playDanger,
+  playRoundResult,
+  toggleSound,
+} = useGameAudio()
 const topOutReported = ref(false)
 const nextRoundReady = ref(false)
 const rematchRequested = ref(false)
@@ -207,6 +217,9 @@ const networkStatusLabel = computed(() => {
 })
 
 let animationFrame = 0
+let idleTimer: ReturnType<typeof setTimeout> | null = null
+let wasLive = false
+let lastDrawnStatus = simulationState.status
 let previousTimestamp = 0
 let accumulatorMs = 0
 let lastRenderAt = 0
@@ -215,6 +228,8 @@ let lastSnapshotAt = 0
 let lastRecoverySnapshotAt = 0
 let lastChecksumSequence =
   Math.floor(simulationState.elapsedMs / CHECKSUM_INTERVAL_MS) - 1
+let lastAudioClearAt =
+  simulationState.lastClearEvent?.occurredAt ?? Number.NEGATIVE_INFINITY
 let snapshotSequence = 0
 let renderRequested = true
 let resizeObserver: ResizeObserver | null = null
@@ -318,14 +333,29 @@ watch(activePreparation, async (preparation) => {
     lastRecoverySnapshotAt = 0
     lastChecksumSequence =
       Math.floor(simulationState.elapsedMs / CHECKSUM_INTERVAL_MS) - 1
+    lastAudioClearAt =
+      simulationState.lastClearEvent?.occurredAt ??
+      Number.NEGATIVE_INFINITY
     activeStateScopeId = nextScopeId
     await confirmPreparedRound()
   }
 })
 
-watch(roundResult, (result) => {
-  if (result?.roundId === activePreparation.value?.roundId) {
+watch(roundResult, (result, previousResult) => {
+  if (
+    result !== null &&
+    result.roundId === activePreparation.value?.roundId
+  ) {
     clearLocalSimulationSnapshot()
+    if (previousResult?.roundId !== result.roundId) {
+      playRoundResult(
+        result.result === 'draw'
+          ? 'draw'
+          : result.winnerPlayerId === session.value?.playerId
+            ? 'win'
+            : 'loss',
+      )
+    }
   }
 })
 
@@ -364,6 +394,7 @@ function render(): void {
 
 function requestRender(): void {
   renderRequested = true
+  wakeLoop()
 }
 
 function updateUiState(timestamp: number, serverNow: number): void {
@@ -439,7 +470,19 @@ function applyIncomingAttacks(): void {
       serverSequence: attack.serverSequence,
       blocks: attack.blocks.map((block) => ({ ...block })),
     })
+    playGarbageReceived()
     acknowledgeAttack(attack)
+  }
+}
+
+function playSimulationSounds(): void {
+  const clear = simulationState.lastClearEvent
+  if (clear !== null && clear.occurredAt > lastAudioClearAt) {
+    lastAudioClearAt = clear.occurredAt
+    playClear(clear.normalSize, clear.chainLevel)
+  }
+  if (simulationState.dangerRemainingMs !== null) {
+    playDanger()
   }
 }
 
@@ -498,18 +541,22 @@ function animationLoop(timestamp: number): void {
   if (browserHidden.value) return
 
   const serverNow = getServerNow()
-  if (previousTimestamp === 0) previousTimestamp = timestamp
-  const frameDelta = Math.min(100, timestamp - previousTimestamp)
-  previousTimestamp = timestamp
-
   const simulationIsLive = isRoundLiveAt(serverNow)
+
   if (simulationIsLive) {
+    // Coming out of an idle tick, previousTimestamp is up to one idle
+    // interval stale — start fresh so the accumulator does not burst.
+    if (!wasLive || previousTimestamp === 0) previousTimestamp = timestamp
+    const frameDelta = Math.min(100, timestamp - previousTimestamp)
+    previousTimestamp = timestamp
+
     applyIncomingAttacks()
     accumulatorMs += frameDelta
     while (accumulatorMs >= defaultGameConfig.timing.fixedStepMs) {
       simulationState = stepSimulation(simulationState)
       accumulatorMs -= defaultGameConfig.timing.fixedStepMs
     }
+    playSimulationSounds()
     reportTopOutIfNeeded()
     flushOutgoingAttacks(serverNow)
     sendCurrentChecksum(serverNow)
@@ -519,12 +566,26 @@ function animationLoop(timestamp: number): void {
       sendCurrentSnapshot(serverNow)
     }
     persistLocalSimulationSnapshot()
+  } else {
+    previousTimestamp = 0
+  }
+  wasLive = simulationIsLive
+
+  // Once the local board has topped out nothing on it moves again, but the
+  // round only stops counting as live when the server confirms the result.
+  // Keep reporting and syncing, just stop doing it at display rate.
+  const simulationIsAnimating =
+    simulationIsLive && simulationState.status === 'playing'
+  // The tick that ends the round must still paint its final frame.
+  if (simulationState.status !== lastDrawnStatus) {
+    lastDrawnStatus = simulationState.status
+    renderRequested = true
   }
 
   updateUiState(timestamp, serverNow)
   if (
     renderRequested ||
-    (simulationIsLive &&
+    (simulationIsAnimating &&
       (lastRenderAt === 0 ||
         timestamp - lastRenderAt >= RENDER_INTERVAL_MS))
   ) {
@@ -532,11 +593,52 @@ function animationLoop(timestamp: number): void {
     renderRequested = false
     lastRenderAt = timestamp
   }
-  animationFrame = requestAnimationFrame(animationLoop)
+  scheduleNextTick(simulationIsAnimating, serverNow)
+}
+
+// While a round is live we need per-frame stepping. Outside of one (lobby,
+// countdown, results) nothing moves and only the clock-driven labels need
+// refreshing, so drop off requestAnimationFrame onto a slow timer instead of
+// waking the CPU 60 times a second for nothing.
+function scheduleNextTick(
+  simulationIsLive: boolean,
+  serverNow: number,
+): void {
+  if (browserHidden.value || animationFrame !== 0 || idleTimer !== null) return
+  if (simulationIsLive || renderRequested || roundStartIsImminent(serverNow)) {
+    animationFrame = requestAnimationFrame(animationLoop)
+    return
+  }
+  idleTimer = setTimeout(() => {
+    idleTimer = null
+    animationLoop(performance.now())
+  }, UI_UPDATE_INTERVAL_MS)
+}
+
+// Never let an idle tick straddle the round start — be back on rAF before the
+// first simulation step is due.
+function roundStartIsImminent(serverNow: number): boolean {
+  const starting = activeStarting.value
+  return (
+    starting !== null &&
+    serverNow >= starting.startAt - UI_UPDATE_INTERVAL_MS * 2 &&
+    serverNow < starting.startAt
+  )
 }
 
 function startAnimationLoop(): void {
-  if (animationFrame !== 0 || browserHidden.value) return
+  if (animationFrame !== 0 || idleTimer !== null || browserHidden.value) return
+  animationFrame = requestAnimationFrame(animationLoop)
+}
+
+// Pull the loop back onto rAF immediately when something needs drawing
+// (resize, selection, a round going live) rather than waiting out the timer.
+function wakeLoop(): void {
+  if (browserHidden.value || animationFrame !== 0) return
+  if (idleTimer !== null) {
+    clearTimeout(idleTimer)
+    idleTimer = null
+  }
   animationFrame = requestAnimationFrame(animationLoop)
 }
 
@@ -547,6 +649,11 @@ function suspendForBackground(): void {
   foregroundSyncing.value = false
   if (animationFrame !== 0) cancelAnimationFrame(animationFrame)
   animationFrame = 0
+  if (idleTimer !== null) {
+    clearTimeout(idleTimer)
+    idleTimer = null
+  }
+  wasLive = false
   previousTimestamp = 0
   accumulatorMs = 0
   lastRenderAt = 0
@@ -557,9 +664,12 @@ function suspendForBackground(): void {
 }
 
 async function resumeFromBackground(): Promise<void> {
-  if (!browserHidden.value && animationFrame !== 0) return
+  if (!browserHidden.value && (animationFrame !== 0 || idleTimer !== null)) {
+    return
+  }
   browserHidden.value = false
   foregroundSyncing.value = true
+  wasLive = false
   previousTimestamp = 0
   accumulatorMs = 0
   lastRenderAt = 0
@@ -617,12 +727,14 @@ function trySwap(row: number, column: number, direction: -1 | 1): boolean {
   simulationState = result.state
   if (result.ok) {
     selected.value = null
+    playSwap()
     requestRender()
   }
   return result.ok
 }
 
 function onBoardPointerDown(event: PointerEvent): void {
+  unlockAudio()
   if (!roundIsLive.value || activePointer !== null) return
   const coordinate = boardCoordinate(event)
   if (coordinate === null) {
@@ -699,6 +811,7 @@ function onBoardPointerEnd(event: PointerEvent): void {
 }
 
 function startRaise(event: PointerEvent): void {
+  unlockAudio()
   if (!isRoundLiveAt(getServerNow())) return
   const target = event.currentTarget as HTMLElement
   target.setPointerCapture(event.pointerId)
@@ -783,6 +896,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   persistLocalSimulationSnapshot(true)
   cancelAnimationFrame(animationFrame)
+  if (idleTimer !== null) clearTimeout(idleTimer)
   document.removeEventListener('visibilitychange', handleVisibilityChange)
   window.removeEventListener('pagehide', suspendForBackground)
   window.removeEventListener('pageshow', handleVisibilityChange)
@@ -941,21 +1055,33 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <button
-        class="raise"
-        type="button"
-        :disabled="
-          !roundIsLive ||
-          state.status === 'lost' ||
-          state.dangerRemainingMs !== null
-        "
-        @pointerdown="startRaise"
-        @pointerup="stopRaise"
-        @pointercancel="stopRaise"
-        @pointerleave="stopRaise"
-      >
-        Hold to raise
-      </button>
+      <div class="game-controls">
+        <button
+          class="raise"
+          type="button"
+          :disabled="
+            !roundIsLive ||
+            state.status === 'lost' ||
+            state.dangerRemainingMs !== null
+          "
+          @pointerdown="startRaise"
+          @pointerup="stopRaise"
+          @pointercancel="stopRaise"
+          @pointerleave="stopRaise"
+        >
+          Hold to raise
+        </button>
+        <button
+          class="sound-toggle"
+          type="button"
+          :aria-label="soundEnabled ? 'Mute game sounds' : 'Enable game sounds'"
+          :aria-pressed="soundEnabled"
+          :title="soundEnabled ? 'Mute game sounds' : 'Enable game sounds'"
+          @click="toggleSound"
+        >
+          <span aria-hidden="true">{{ soundEnabled ? '♪' : '×' }}</span>
+        </button>
+      </div>
 
       <p v-if="errorMessage" class="error-message" role="alert">
         {{ errorMessage }}
@@ -1458,6 +1584,12 @@ onBeforeUnmount(() => {
   font-weight: 800;
 }
 
+.game-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 58px;
+  gap: 10px;
+}
+
 .raise {
   width: 100%;
   min-height: 58px;
@@ -1487,6 +1619,34 @@ onBeforeUnmount(() => {
 .raise:disabled {
   filter: saturate(0.45);
   opacity: 0.62;
+}
+
+.sound-toggle {
+  min-width: 58px;
+  min-height: 58px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: linear-gradient(180deg, #fff 0%, #ffead6 100%);
+  box-shadow:
+    inset 0 2px 0 rgba(255, 255, 255, 0.8),
+    0 4px 0 #f6c29a,
+    0 8px 14px rgba(120, 80, 50, 0.16);
+  color: #ed6a45;
+  font-family: "Fredoka", sans-serif;
+  font-size: 1.45rem;
+  font-weight: 700;
+}
+
+.sound-toggle:active {
+  transform: translateY(2px);
+  box-shadow:
+    inset 0 2px 0 rgba(255, 255, 255, 0.75),
+    0 2px 0 #f6c29a;
+}
+
+.sound-toggle[aria-pressed="false"] {
+  background: linear-gradient(180deg, #fff 0%, #f2e8e0 100%);
+  color: #a38b7c;
 }
 
 .error-message {

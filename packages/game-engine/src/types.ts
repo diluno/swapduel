@@ -147,6 +147,7 @@ export interface SimulationState {
   board: Board
   riseOffset: number
   riseSpeed: number
+  stopTimeRemainingMs: number
   dangerRemainingMs: number | null
   manualRaise: boolean
   status: RoundStatus
@@ -189,6 +190,11 @@ export interface TimingConfig {
   garbageCellConvertMs: number
   garbageReleaseDelayMs: number
   chainWindowMs: number
+  comboStopBaseMs: number
+  comboStopPerPanelMs: number
+  chainStopBaseMs: number
+  chainStopPerLevelMs: number
+  maximumStopTimeMs: number
   dangerGraceMs: number
 }
 

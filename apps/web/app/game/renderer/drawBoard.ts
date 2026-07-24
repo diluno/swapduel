@@ -166,6 +166,125 @@ function drawSymbol(
   context.restore()
 }
 
+// Panels are the hot path: up to 72 of them redrawn every frame, each
+// otherwise costing a clip(), a freshly allocated gradient and a handful of
+// paths. Their appearance only depends on (type, variant, cellSize, dpr), so
+// each combination is rasterised once into a small offscreen canvas and the
+// per-frame work collapses to a single drawImage.
+type PanelSpriteVariant = 'idle' | 'flashing' | 'incoming'
+
+const PANEL_SPRITE_VARIANTS: readonly PanelSpriteVariant[] = [
+  'idle',
+  'flashing',
+  'incoming',
+]
+
+interface PanelSpriteSheet {
+  signature: string
+  padding: number
+  size: number
+  sprites: Map<string, HTMLCanvasElement>
+}
+
+let panelSpriteSheet: PanelSpriteSheet | null = null
+
+function renderPanelSprite(
+  panelType: PanelType,
+  variant: PanelSpriteVariant,
+  cellSize: number,
+  padding: number,
+  dpr: number,
+): HTMLCanvasElement {
+  const size = cellSize + padding * 2
+  const sprite = document.createElement('canvas')
+  sprite.width = Math.max(1, Math.round(size * dpr))
+  sprite.height = Math.max(1, Math.round(size * dpr))
+
+  const context = sprite.getContext('2d')
+  if (context === null) return sprite
+  context.setTransform(dpr, 0, 0, dpr, 0, 0)
+
+  const inset = cellSize * 0.075
+  const centerX = padding + cellSize / 2
+  const centerY = padding + cellSize / 2
+
+  // Mirrors the per-variant state the immediate-mode path used to set on the
+  // board context before drawing a panel.
+  if (variant === 'flashing') {
+    context.shadowColor = PANEL_COLORS[panelType].top
+    context.shadowBlur = cellSize * 0.25
+  } else if (variant === 'incoming') {
+    context.filter = 'saturate(0.7)'
+    context.shadowColor = PANEL_COLORS[panelType].bottom
+    context.shadowBlur = cellSize * 0.08
+  }
+
+  drawPanelSurface(
+    context,
+    panelType,
+    padding,
+    padding,
+    cellSize,
+    inset,
+    variant === 'flashing',
+  )
+  // A flashing panel is a solid white pop with no symbol on top.
+  if (variant !== 'flashing') {
+    drawSymbol(context, panelType, centerX, centerY, cellSize)
+  }
+
+  return sprite
+}
+
+function panelSpritesFor(
+  cellSize: number,
+  dpr: number,
+): PanelSpriteSheet {
+  const signature = `${cellSize.toFixed(3)}|${dpr}`
+  if (panelSpriteSheet !== null && panelSpriteSheet.signature === signature) {
+    return panelSpriteSheet
+  }
+
+  // Enough room for the widest glow (flashing, blur = cellSize * 0.25).
+  const padding = Math.ceil(cellSize * 0.35)
+  const sprites = new Map<string, HTMLCanvasElement>()
+  for (const panelType of Object.keys(PANEL_COLORS) as PanelType[]) {
+    for (const variant of PANEL_SPRITE_VARIANTS) {
+      sprites.set(
+        `${panelType}|${variant}`,
+        renderPanelSprite(panelType, variant, cellSize, padding, dpr),
+      )
+    }
+  }
+
+  panelSpriteSheet = {
+    signature,
+    padding,
+    size: cellSize + padding * 2,
+    sprites,
+  }
+  return panelSpriteSheet
+}
+
+function drawPanelSprite(
+  context: CanvasRenderingContext2D,
+  sheet: PanelSpriteSheet,
+  panelType: PanelType,
+  variant: PanelSpriteVariant,
+  x: number,
+  y: number,
+): void {
+  const sprite = sheet.sprites.get(`${panelType}|${variant}`)
+  if (sprite === undefined) return
+  context.drawImage(
+    sprite,
+    x - sheet.padding,
+    y - sheet.padding,
+    sheet.size,
+    sheet.size,
+  )
+}
+
 function drawGarbageBlock(
   context: CanvasRenderingContext2D,
   block: GarbageBlock,
@@ -576,20 +695,20 @@ export function drawBoard(
   context.fillStyle = '#fff4e8'
   context.fillRect(0, 0, cssWidth, cssHeight)
 
+  const sprites = panelSpritesFor(cellSize, dpr)
+
   context.strokeStyle = 'rgba(196, 120, 80, 0.1)'
   context.lineWidth = 1
+  context.beginPath()
   for (let column = 1; column < state.board.columns; column += 1) {
-    context.beginPath()
     context.moveTo(column * cellSize, 0)
     context.lineTo(column * cellSize, cssHeight)
-    context.stroke()
   }
   for (let row = 1; row < state.board.visibleRows; row += 1) {
-    context.beginPath()
     context.moveTo(0, row * cellSize)
     context.lineTo(cssWidth, row * cellSize)
-    context.stroke()
   }
+  context.stroke()
 
   for (const block of state.garbage) {
     const visualRow =
@@ -622,22 +741,10 @@ export function drawBoard(
   ) {
     const type = state.board.incomingRow[column]!
     const x = column * cellSize
-    const inset = cellSize * 0.075
 
-    context.save()
     context.globalAlpha = 0.45
-    context.filter = 'saturate(0.7)'
-    context.shadowColor = PANEL_COLORS[type].bottom
-    context.shadowBlur = cellSize * 0.08
-    drawPanelSurface(context, type, x, incomingY, cellSize, inset)
-    drawSymbol(
-      context,
-      type,
-      x + cellSize / 2,
-      incomingY + cellSize / 2,
-      cellSize,
-    )
-    context.restore()
+    drawPanelSprite(context, sprites, type, 'incoming', x, incomingY)
+    context.globalAlpha = 1
   }
 
   for (const row of state.board.cells) {
@@ -660,7 +767,6 @@ export function drawBoard(
       const y =
         cssHeight -
         (panel.row + 1 + state.riseOffset) * cellSize
-      const inset = cellSize * 0.075
       const flashing =
         panel.state === 'flashing' &&
         !options.reducedMotion &&
@@ -669,29 +775,16 @@ export function drawBoard(
       const alpha =
         panel.state === 'clearing' ? Math.max(0.12, 1 - phaseProgress) : 1
 
-      context.save()
-      context.globalAlpha = alpha
-      context.shadowColor = PANEL_COLORS[panel.type].top
-      context.shadowBlur = panel.state === 'flashing' ? cellSize * 0.25 : 0
-      drawPanelSurface(
+      if (alpha !== 1) context.globalAlpha = alpha
+      drawPanelSprite(
         context,
+        sprites,
         panel.type,
+        flashing ? 'flashing' : 'idle',
         x,
         y,
-        cellSize,
-        inset,
-        flashing,
       )
-      if (!flashing) {
-        drawSymbol(
-          context,
-          panel.type,
-          x + cellSize / 2,
-          y + cellSize / 2,
-          cellSize,
-        )
-      }
-      context.restore()
+      if (alpha !== 1) context.globalAlpha = 1
     }
   }
 

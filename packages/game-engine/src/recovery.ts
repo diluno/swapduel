@@ -257,6 +257,9 @@ export function isSimulationState(
     value.riseOffset < 1 &&
     isFiniteNumber(value.riseSpeed) &&
     value.riseSpeed >= 0 &&
+    isFiniteNumber(value.stopTimeRemainingMs) &&
+    value.stopTimeRemainingMs >= 0 &&
+    value.stopTimeRemainingMs <= config.timing.maximumStopTimeMs &&
     (value.dangerRemainingMs === null ||
       (isFiniteNumber(value.dangerRemainingMs) &&
         value.dangerRemainingMs >= 0)) &&
@@ -318,7 +321,7 @@ export function serializeSimulationSnapshot(
   savedAt: number,
 ): string {
   return JSON.stringify({
-    version: 1,
+    version: 2,
     scopeId,
     seed: state.seed,
     savedAt,
@@ -341,7 +344,7 @@ export function restoreSimulationSnapshot(
     const snapshot: unknown = JSON.parse(serialized)
     if (
       !isRecord(snapshot) ||
-      snapshot.version !== 1 ||
+      snapshot.version !== 2 ||
       snapshot.scopeId !== options.scopeId ||
       snapshot.seed !== options.expectedSeed ||
       !isFiniteNumber(snapshot.savedAt) ||

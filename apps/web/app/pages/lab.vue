@@ -3,12 +3,12 @@ import {
   createSimulation,
   defaultGameConfig,
   enqueueIncomingGarbage,
+  isSimulationState,
   requestSwap,
   setManualRaise,
   setPaused,
   simulationChecksum,
   stepSimulation,
-  type SimulationState,
 } from '@swapduel/game-engine'
 import { drawBoard } from '~/game/renderer/drawBoard'
 
@@ -25,10 +25,21 @@ const selected = ref<{ row: number; column: number } | null>(null)
 const jsonState = ref('')
 const message = ref('Ready')
 const reducedMotion = ref(false)
+const {
+  soundEnabled,
+  unlockAudio,
+  playSwap,
+  playClear,
+  playGarbageReceived,
+  playDanger,
+  toggleSound,
+} = useGameAudio()
 
 let animationFrame = 0
 let previousTimestamp = 0
 let accumulatorMs = 0
+let lastAudioClearAt =
+  state.value.lastClearEvent?.occurredAt ?? Number.NEGATIVE_INFINITY
 let resizeObserver: ResizeObserver | null = null
 let activePointer:
   | {
@@ -55,6 +66,17 @@ function render(): void {
   })
 }
 
+function playSimulationSounds(): void {
+  const clear = state.value.lastClearEvent
+  if (clear !== null && clear.occurredAt > lastAudioClearAt) {
+    lastAudioClearAt = clear.occurredAt
+    playClear(clear.normalSize, clear.chainLevel)
+  }
+  if (state.value.dangerRemainingMs !== null) {
+    playDanger()
+  }
+}
+
 function animationLoop(timestamp: number): void {
   if (previousTimestamp === 0) previousTimestamp = timestamp
   const frameDelta = Math.min(100, timestamp - previousTimestamp)
@@ -66,12 +88,14 @@ function animationLoop(timestamp: number): void {
     accumulatorMs -= defaultGameConfig.timing.fixedStepMs
   }
 
+  playSimulationSounds()
   render()
   animationFrame = requestAnimationFrame(animationLoop)
 }
 
 function reset(): void {
   state.value = createSimulation(seed.value.trim() || 'lab-seed-01')
+  lastAudioClearAt = Number.NEGATIVE_INFINITY
   selected.value = null
   jsonState.value = ''
   message.value = `Reset with seed ${state.value.seed}`
@@ -92,6 +116,7 @@ function advanceOneStep(): void {
   state.value = wasPaused
     ? { ...workingState, status: 'paused' as const }
     : workingState
+  playSimulationSounds()
   render()
 }
 
@@ -137,6 +162,7 @@ function forceCombo(): void {
     outgoingAttacks: [],
     lastClearEvent: null,
   }
+  lastAudioClearAt = Number.NEGATIVE_INFINITY
   message.value = 'Forced a four-panel match'
 }
 
@@ -195,6 +221,7 @@ function forceShockMatch(): void {
     outgoingAttacks: [],
     lastClearEvent: null,
   }
+  lastAudioClearAt = Number.NEGATIVE_INFINITY
   message.value = 'Forced a connected three-panel shock match'
 }
 
@@ -257,6 +284,7 @@ function forceChain(): void {
     outgoingAttacks: [],
     lastClearEvent: null,
   }
+  lastAudioClearAt = Number.NEGATIVE_INFINITY
   message.value = 'Forced a two-step gravity chain'
 }
 
@@ -307,6 +335,7 @@ function forceDanger(): void {
     outgoingAttacks: [],
     lastClearEvent: null,
   }
+  lastAudioClearAt = Number.NEGATIVE_INFINITY
   message.value = 'Forced danger at the top row'
 }
 
@@ -322,6 +351,7 @@ function addGarbage(
     serverSequence: sequence,
     blocks: [{ width, height, type }],
   })
+  playGarbageReceived()
   message.value = `Queued ${width}×${height} ${type} garbage`
 }
 
@@ -330,28 +360,15 @@ function exportState(): void {
   message.value = 'Simulation JSON exported below'
 }
 
-function looksLikeSimulation(value: unknown): value is SimulationState {
-  if (typeof value !== 'object' || value === null) return false
-  const candidate = value as Partial<SimulationState>
-  return (
-    typeof candidate.seed === 'string' &&
-    typeof candidate.elapsedMs === 'number' &&
-    typeof candidate.board === 'object' &&
-    candidate.board !== null &&
-    Array.isArray(candidate.board.cells) &&
-    Array.isArray(candidate.board.incomingRow) &&
-    Array.isArray(candidate.garbage) &&
-    Array.isArray(candidate.incomingGarbage)
-  )
-}
-
 function importState(): void {
   try {
     const parsed: unknown = JSON.parse(jsonState.value)
-    if (!looksLikeSimulation(parsed)) {
+    if (!isSimulationState(parsed)) {
       throw new Error('Missing simulation fields')
     }
     state.value = parsed
+    lastAudioClearAt =
+      parsed.lastClearEvent?.occurredAt ?? Number.NEGATIVE_INFINITY
     seed.value = parsed.seed
     selected.value = null
     message.value = 'Simulation JSON loaded'
@@ -391,11 +408,15 @@ function trySwap(row: number, column: number, direction: -1 | 1): boolean {
   const result = requestSwap(state.value, { row, column, direction })
   state.value = result.state
   message.value = result.ok ? 'Swap' : `Swap ignored: ${result.reason}`
-  if (result.ok) selected.value = null
+  if (result.ok) {
+    selected.value = null
+    playSwap()
+  }
   return result.ok
 }
 
 function onBoardPointerDown(event: PointerEvent): void {
+  unlockAudio()
   if (activePointer !== null) return
   const coordinate = boardCoordinate(event)
   if (coordinate === null) {
@@ -472,6 +493,7 @@ function onBoardPointerEnd(event: PointerEvent): void {
 }
 
 function startRaise(event: PointerEvent): void {
+  unlockAudio()
   const target = event.currentTarget as HTMLElement
   target.setPointerCapture(event.pointerId)
   raiseTimer = setTimeout(() => {
@@ -550,6 +572,13 @@ onBeforeUnmount(() => {
       </label>
 
       <div class="button-grid">
+        <button
+          :aria-pressed="soundEnabled"
+          :title="soundEnabled ? 'Mute game sounds' : 'Enable game sounds'"
+          @click="toggleSound"
+        >
+          {{ soundEnabled ? 'Sound on' : 'Sound off' }}
+        </button>
         <button @click="reset">Reset board</button>
         <button @click="togglePause">
           {{ isPaused ? 'Resume' : 'Pause' }}
@@ -600,6 +629,10 @@ onBeforeUnmount(() => {
         <div>
           <dt>Rise</dt>
           <dd>{{ state.riseOffset.toFixed(3) }}</dd>
+        </div>
+        <div>
+          <dt>Rise stop</dt>
+          <dd>{{ state.stopTimeRemainingMs.toFixed(0) }} ms</dd>
         </div>
         <div>
           <dt>Chain</dt>

@@ -123,4 +123,78 @@ describe('fixed-step resolution', () => {
 
     expect(manual.riseOffset).toBeGreaterThan(automatic.riseOffset)
   })
+
+  it('holds automatic rising after a combo, then resumes', () => {
+    const initial = createSimulation('combo-stop-time')
+    let state = stepSimulation({
+      ...initial,
+      board: boardWith([
+        [0, 0, 'circle'],
+        [0, 1, 'circle'],
+        [0, 2, 'circle'],
+        [0, 3, 'circle'],
+      ]),
+    })
+
+    expect(state.stopTimeRemainingMs).toBe(
+      defaultGameConfig.timing.comboStopBaseMs,
+    )
+
+    for (
+      let step = 0;
+      step < 180 && (state.phase !== 'idle' || state.chain !== null);
+      step += 1
+    ) {
+      state = stepSimulation(state)
+    }
+
+    expect(state.phase).toBe('idle')
+    expect(state.chain).toBeNull()
+    expect(state.stopTimeRemainingMs).toBeGreaterThan(0)
+    const stoppedOffset = state.riseOffset
+
+    for (
+      let step = 0;
+      step < 180 && state.stopTimeRemainingMs > 0;
+      step += 1
+    ) {
+      state = stepSimulation(state)
+      expect(state.riseOffset).toBe(stoppedOffset)
+    }
+
+    expect(state.stopTimeRemainingMs).toBe(0)
+    state = stepSimulation(state)
+    expect(state.riseOffset).toBeGreaterThan(stoppedOffset)
+  })
+
+  it('lets manual raising cancel earned stop time', () => {
+    const state = {
+      ...createSimulation('cancel-stop-time'),
+      stopTimeRemainingMs: 900,
+    }
+
+    const raised = setManualRaise(state, true)
+
+    expect(raised.manualRaise).toBe(true)
+    expect(raised.stopTimeRemainingMs).toBe(0)
+  })
+
+  it('does not bank new stop time while manual raising is held', () => {
+    const initial = setManualRaise(
+      createSimulation('manual-combo-stop-time'),
+      true,
+    )
+    const matched = stepSimulation({
+      ...initial,
+      board: boardWith([
+        [0, 0, 'heart'],
+        [0, 1, 'heart'],
+        [0, 2, 'heart'],
+        [0, 3, 'heart'],
+      ]),
+    })
+
+    expect(matched.manualRaise).toBe(true)
+    expect(matched.stopTimeRemainingMs).toBe(0)
+  })
 })

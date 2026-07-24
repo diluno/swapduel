@@ -20,6 +20,11 @@ export const defaultGameConfig: GameConfig = {
     garbageCellConvertMs: 45,
     garbageReleaseDelayMs: 150,
     chainWindowMs: 250,
+    comboStopBaseMs: 450,
+    comboStopPerPanelMs: 120,
+    chainStopBaseMs: 650,
+    chainStopPerLevelMs: 300,
+    maximumStopTimeMs: 3000,
     dangerGraceMs: 3000,
   },
   rise: {

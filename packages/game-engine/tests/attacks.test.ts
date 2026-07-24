@@ -3,6 +3,7 @@ import {
   chainAttackBlocks,
   comboAttackBlocks,
   createSimulation,
+  defaultGameConfig,
   drainOutgoingAttacks,
   shockAttackBlocks,
   stepSimulation,
@@ -84,6 +85,9 @@ describe('data-driven attack tables', () => {
       }),
     ])
     expect(matched.lastClearEvent?.attackSequences).toEqual([1])
+    expect(matched.stopTimeRemainingMs).toBe(
+      defaultGameConfig.timing.comboStopBaseMs,
+    )
 
     const drained = drainOutgoingAttacks(matched)
     expect(drained.attacks).toHaveLength(1)

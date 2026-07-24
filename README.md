@@ -41,6 +41,10 @@ Active simulations are also serialized to session storage every two seconds and
 when the page is suspended. A quick reload can restore only a fresh, versioned
 snapshot for the exact match, round, and seed; malformed or stale state falls
 back to deterministic round creation.
+Live input and simulation events drive original synthesized sound effects for
+swaps, clears, combos, chains, incoming garbage, danger, and round results.
+Audio unlocks only after interaction, and the player's sound preference
+persists locally.
 Clients report a checksum every two simulated seconds. The server retains a
 bounded per-player timeline, ignores duplicates and stale sequences, and logs
 plus returns a visible diagnostic only if the same player reports conflicting
@@ -114,6 +118,7 @@ below the 12 visible cell rows. All simulation timing and tuning values live in
 - Timed swap, flash, clear, fall-delay, and gravity phases
 - Data-driven combo attacks
 - Gravity and active-swap chain detection with deterministic chain closure
+- Configurable combo and chain stop time with manual-raise cancellation
 - Ordered local attack output ready for the networking layer
 - Ordered, deduplicated incoming garbage attacks
 - Deterministic partial/full-width garbage placement and rectangular falling

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   createSimulation,
+  defaultGameConfig,
   requestSwap,
   stepSimulation,
   type SimulationState,
@@ -51,6 +52,9 @@ describe('chain lifecycle', () => {
       chainLevel: 2,
       qualifiedForChain: true,
     })
+    expect(chained.stopTimeRemainingMs).toBe(
+      defaultGameConfig.timing.chainStopBaseMs,
+    )
     expect(chained.outgoingAttacks).toEqual([
       expect.objectContaining({
         sequence: 1,

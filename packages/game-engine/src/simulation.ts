@@ -224,6 +224,20 @@ function beginMatchResolution(
     matches,
   )
   const conversion = beginGarbageConversion(state, touchedGarbageIds)
+  const comboStopMs =
+    normalSize < 4
+      ? 0
+      : config.timing.comboStopBaseMs +
+        (normalSize - 4) * config.timing.comboStopPerPanelMs
+  const chainStopMs =
+    !qualifiedForChain || chain.level < 2
+      ? 0
+      : config.timing.chainStopBaseMs +
+        (chain.level - 2) * config.timing.chainStopPerLevelMs
+  const stopTimeRemainingMs = Math.min(
+    config.timing.maximumStopTimeMs,
+    state.stopTimeRemainingMs + comboStopMs + chainStopMs,
+  )
 
   return {
     ...state,
@@ -245,6 +259,7 @@ function beginMatchResolution(
     nextAttackSequence,
     garbage: conversion.garbage,
     garbageConversion: conversion.garbageConversion,
+    stopTimeRemainingMs,
     lastClearEvent: {
       size: matchedPanelIds.length,
       normalSize,
@@ -688,6 +703,9 @@ function advanceRise(
   state: SimulationState,
   config: GameConfig,
 ): SimulationState {
+  if (state.manualRaise && state.stopTimeRemainingMs > 0) {
+    state = { ...state, stopTimeRemainingMs: 0 }
+  }
   if (
     state.status !== 'playing' ||
     state.dangerRemainingMs !== null ||
@@ -705,6 +723,16 @@ function advanceRise(
     state.chain === null
   if (!state.manualRaise && !automaticRiseAllowed) {
     return state
+  }
+  if (!state.manualRaise && state.stopTimeRemainingMs > 0) {
+    return {
+      ...state,
+      riseSpeed: 0,
+      stopTimeRemainingMs: Math.max(
+        0,
+        state.stopTimeRemainingMs - config.timing.fixedStepMs,
+      ),
+    }
   }
 
   const elapsedSeconds = state.elapsedMs / 1000
@@ -803,6 +831,7 @@ export function createSimulation(
     board: initial.board,
     riseOffset: 0,
     riseSpeed: config.rise.startingRowsPerSecond,
+    stopTimeRemainingMs: 0,
     dangerRemainingMs: null,
     manualRaise: false,
     status: 'playing',
@@ -926,7 +955,7 @@ export function setManualRaise(
   }
 
   return state.status === 'playing' && state.dangerRemainingMs === null
-    ? { ...state, manualRaise: true }
+    ? { ...state, manualRaise: true, stopTimeRemainingMs: 0 }
     : state
 }
 
@@ -1001,6 +1030,7 @@ export function simulationChecksum(state: SimulationState): string {
     state.elapsedMs.toFixed(4),
     state.riseOffset.toFixed(8),
     state.riseSpeed.toFixed(8),
+    state.stopTimeRemainingMs.toFixed(4),
     state.dangerRemainingMs?.toFixed(4) ?? 'safe',
     state.status,
     state.phase,
