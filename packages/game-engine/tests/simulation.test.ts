@@ -209,19 +209,33 @@ describe('fixed-step resolution', () => {
     expect(state.riseOffset).toBeGreaterThan(stoppedOffset)
   })
 
-  it('lets manual raising cancel earned stop time', () => {
+  it('spends stop time faster while raising instead of wiping it', () => {
     const state = {
-      ...createSimulation('cancel-stop-time'),
+      ...createSimulation('spend-stop-time'),
       stopTimeRemainingMs: 900,
     }
+    const { fixedStepMs } = defaultGameConfig.timing
+    const { manualStopDrainMultiplier } = defaultGameConfig.rise
 
     const raised = setManualRaise(state, true)
-
     expect(raised.manualRaise).toBe(true)
-    expect(raised.stopTimeRemainingMs).toBe(0)
+    // Holding raise no longer destroys the buffer on the spot.
+    expect(raised.stopTimeRemainingMs).toBe(900)
+
+    const raisedStep = stepSimulation(raised)
+    const heldStep = stepSimulation(state)
+
+    expect(raisedStep.stopTimeRemainingMs).toBeCloseTo(
+      900 - fixedStepMs * manualStopDrainMultiplier,
+      6,
+    )
+    expect(heldStep.stopTimeRemainingMs).toBeCloseTo(900 - fixedStepMs, 6)
+    // The point of spending it: the stack actually moves while stopped.
+    expect(raisedStep.riseOffset).toBeGreaterThan(0)
+    expect(heldStep.riseOffset).toBe(state.riseOffset)
   })
 
-  it('does not bank new stop time while manual raising is held', () => {
+  it('banks stop time earned by a clear made while raising', () => {
     const initial = setManualRaise(
       createSimulation('manual-combo-stop-time'),
       true,
@@ -237,6 +251,6 @@ describe('fixed-step resolution', () => {
     })
 
     expect(matched.manualRaise).toBe(true)
-    expect(matched.stopTimeRemainingMs).toBe(0)
+    expect(matched.stopTimeRemainingMs).toBeGreaterThan(0)
   })
 })

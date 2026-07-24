@@ -213,6 +213,8 @@ export interface RiseConfig {
   speedMultiplierPerIncrease: number
   maximumRowsPerSecond: number
   manualRowsPerSecond: number
+  /** How much faster stop time drains while manual raise is held. */
+  manualStopDrainMultiplier: number
 }
 
 export interface AttackConfig {

@@ -26,7 +26,7 @@ garbage icons above the board and drops it after a short delay, mid-play.
 The visible queue builds versus tension and gives the defender a fair window
 to chain in response.
 
-### 2.2 Reward manual raise instead of punishing it
+### 2.2 Reward manual raise instead of punishing it — ✅ done (bonus attack not taken)
 Raising currently destroys stop time (`simulation.ts:722-724`) and is blocked
 in danger. SNES rewards raising. At minimum:
 - Don't wipe stop time on raise; allow raising during stop (consume it faster).

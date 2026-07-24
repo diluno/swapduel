@@ -35,6 +35,7 @@ export const defaultGameConfig: GameConfig = {
     speedMultiplierPerIncrease: 1.12,
     maximumRowsPerSecond: 0.25,
     manualRowsPerSecond: 0.9,
+    manualStopDrainMultiplier: 3,
   },
   attacks: {
     comboTable: [

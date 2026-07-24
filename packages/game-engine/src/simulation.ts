@@ -744,9 +744,6 @@ function advanceRise(
   state: SimulationState,
   config: GameConfig,
 ): SimulationState {
-  if (state.manualRaise && state.stopTimeRemainingMs > 0) {
-    state = { ...state, stopTimeRemainingMs: 0 }
-  }
   if (
     state.status !== 'playing' ||
     state.dangerRemainingMs !== null ||
@@ -788,6 +785,17 @@ function advanceRise(
   const riseSpeed = state.manualRaise
     ? config.rise.manualRowsPerSecond
     : automaticSpeed
+  // Raising through earned stop time spends it faster rather than throwing it
+  // away: pushing the stack up is the aggressive play, so it should cost tempo,
+  // not erase the whole buffer the way it used to.
+  const stopTimeRemainingMs =
+    state.manualRaise && state.stopTimeRemainingMs > 0
+      ? Math.max(
+          0,
+          state.stopTimeRemainingMs -
+            config.timing.fixedStepMs * config.rise.manualStopDrainMultiplier,
+        )
+      : state.stopTimeRemainingMs
   let riseOffset =
     state.riseOffset + riseSpeed * (config.timing.fixedStepMs / 1000)
   let board = state.board
@@ -824,6 +832,7 @@ function advanceRise(
     riseSpeed,
     status,
     dangerRemainingMs,
+    stopTimeRemainingMs,
   }
 }
 
@@ -995,8 +1004,10 @@ export function setManualRaise(
     return state.manualRaise ? { ...state, manualRaise: false } : state
   }
 
+  // Earned stop time survives the raise; holding it just burns through the
+  // buffer more quickly (see advanceRise).
   return state.status === 'playing' && state.dangerRemainingMs === null
-    ? { ...state, manualRaise: true, stopTimeRemainingMs: 0 }
+    ? { ...state, manualRaise: true }
     : state
 }
 

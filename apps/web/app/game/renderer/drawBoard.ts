@@ -6,6 +6,7 @@ import {
 } from '@swapduel/game-engine'
 import {
   SQUASH_DURATION_MS,
+  panelFallVisual,
   shakeOffset,
   type ImpactState,
 } from './impact'
@@ -964,9 +965,22 @@ export function drawBoard(
           ? panel.offsetX * cellSize * phaseProgress
           : 0
       const x = panel.column * cellSize + swapOffset
-      const y =
+      let y =
         cssHeight -
         (panel.row + 1 + state.riseOffset) * cellSize
+      // Panels are placed in their landing cell the instant gravity runs, so
+      // the drop is played back here: lift the panel to where it fell from and
+      // let it come down, then bounce.
+      const fall =
+        options.reducedMotion || panel.state !== 'idle'
+          ? undefined
+          : impact?.panelFalls.get(panel.id)
+      let landingSquash = 0
+      if (fall !== undefined) {
+        const visual = panelFallVisual(fall, state.elapsedMs)
+        y -= visual.riseCells * cellSize
+        landingSquash = visual.squash
+      }
       let flashing =
         panel.state === 'flashing' &&
         !options.reducedMotion &&
@@ -1008,6 +1022,14 @@ export function drawBoard(
         context.scale(popScale, popScale)
         context.translate(-(x + cellSize / 2), -(y + cellSize / 2))
       }
+      if (landingSquash > 0) {
+        // Pinned to the cell's bottom edge so the panel never sinks into
+        // whatever it landed on.
+        context.save()
+        context.translate(x + cellSize / 2, y + cellSize)
+        context.scale(1 + landingSquash * 0.45, 1 - landingSquash)
+        context.translate(-(x + cellSize / 2), -(y + cellSize))
+      }
       drawPanelSprite(
         context,
         sprites,
@@ -1016,6 +1038,7 @@ export function drawBoard(
         x,
         y,
       )
+      if (landingSquash > 0) context.restore()
       if (popScale !== 1) context.restore()
       if (alpha !== 1) context.globalAlpha = 1
     }

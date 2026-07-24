@@ -8,9 +8,9 @@ import type { SimulationState } from '@swapduel/game-engine'
 
 export const SQUASH_DURATION_MS = 240
 const SHAKE_DURATION_MS = 320
+const LANDING_MEMORY_MS = 1_000
 /** Rows of clear space left above the stack when panic starts creeping in. */
 const PANIC_HEADROOM_ROWS = 2
-const LANDING_MEMORY_MS = 1_000
 
 export interface LandingEvent {
   /** Number of garbage cells that touched down on this step. */
@@ -19,9 +19,18 @@ export interface LandingEvent {
   width: number
 }
 
+export interface PanelFall {
+  /** How many cells the panel dropped. */
+  distance: number
+  /** Simulation time the engine put it in its landing cell. */
+  landedAt: number
+}
+
 export interface ImpactState {
   /** Block id → simulation time the block landed at. */
   landings: Map<number, number>
+  /** Panel id → the drop it is still animating through. */
+  panelFalls: Map<number, PanelFall>
   shakeStartedAt: number
   /** 0..1, how hard the last landing hit. */
   shakeStrength: number
@@ -36,20 +45,56 @@ export interface ImpactTracker {
 
 export function createImpactTracker(): ImpactTracker {
   const previousStates = new Map<number, string>()
+  const previousPanelRows = new Map<number, number>()
   const state: ImpactState = {
     landings: new Map(),
+    panelFalls: new Map(),
     shakeStartedAt: Number.NEGATIVE_INFINITY,
     shakeStrength: 0,
   }
 
   function reset(): void {
     previousStates.clear()
+    previousPanelRows.clear()
     state.landings.clear()
+    state.panelFalls.clear()
     state.shakeStartedAt = Number.NEGATIVE_INFINITY
     state.shakeStrength = 0
   }
 
+  // Gravity teleports a panel straight into its landing cell and clears its
+  // offset, so the drop has to be reconstructed here: a row that decreased
+  // between two observations is a panel that fell that far.
+  function observePanels(simulation: SimulationState): void {
+    const live = new Set<number>()
+
+    for (const row of simulation.board.cells) {
+      for (const panel of row) {
+        if (panel === null) continue
+        live.add(panel.id)
+        const previousRow = previousPanelRows.get(panel.id)
+        previousPanelRows.set(panel.id, panel.row)
+        if (previousRow === undefined || panel.row >= previousRow) continue
+        state.panelFalls.set(panel.id, {
+          distance: previousRow - panel.row,
+          landedAt: simulation.elapsedMs,
+        })
+      }
+    }
+
+    for (const id of previousPanelRows.keys()) {
+      if (!live.has(id)) previousPanelRows.delete(id)
+    }
+    for (const [id, fall] of state.panelFalls) {
+      const age = simulation.elapsedMs - fall.landedAt
+      if (!live.has(id) || age > panelFallDurationMs(fall.distance) + SQUASH_DURATION_MS) {
+        state.panelFalls.delete(id)
+      }
+    }
+  }
+
   function observe(simulation: SimulationState): LandingEvent | null {
+    observePanels(simulation)
     let cells = 0
     let width = 0
     const live = new Set<number>()
@@ -90,6 +135,43 @@ export function createImpactTracker(): ImpactTracker {
   }
 
   return { state, observe, reset }
+}
+
+/**
+ * A one-cell drop is a quick tap; longer drops take more time but not
+ * proportionally more, so tall collapses still feel snappy.
+ */
+export function panelFallDurationMs(distance: number): number {
+  return Math.min(190, 66 * Math.sqrt(Math.max(1, distance)))
+}
+
+/**
+ * Where a falling panel should be drawn and how squashed it is, in cell units,
+ * for a panel the engine has already placed in its landing cell.
+ */
+export function panelFallVisual(
+  fall: PanelFall,
+  elapsedMs: number,
+): { riseCells: number; squash: number } {
+  const age = elapsedMs - fall.landedAt
+  const duration = panelFallDurationMs(fall.distance)
+
+  if (age < 0) return { riseCells: fall.distance, squash: 0 }
+  if (age < duration) {
+    // Accelerating fall: covers little ground early, arrives fast.
+    const progress = age / duration
+    return { riseCells: fall.distance * (1 - progress ** 2), squash: 0 }
+  }
+
+  const settleAge = age - duration
+  if (settleAge >= SQUASH_DURATION_MS) return { riseCells: 0, squash: 0 }
+  const settle = settleAge / SQUASH_DURATION_MS
+  // One compression on impact that springs back out, scaled by drop height.
+  const weight = Math.min(1, 0.5 + fall.distance * 0.18)
+  return {
+    riseCells: 0,
+    squash: Math.sin(settle * Math.PI) * (1 - settle) * 0.3 * weight,
+  }
 }
 
 /**
