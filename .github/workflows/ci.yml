@@ -20,3 +20,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
       - run: pnpm typecheck
+      # Railway builds this on every push to main; without it here a
+      # build-breaking change passes CI and only fails at deploy time.
+      - run: pnpm build
+        env:
+          NODE_ENV: production

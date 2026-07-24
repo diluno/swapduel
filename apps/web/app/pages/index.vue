@@ -64,7 +64,6 @@ async function joinPrivateMatch(): Promise<void> {
             name="displayName"
             maxlength="20"
             autocomplete="nickname"
-            placeholder="Peachy player"
             required
           >
         </label>

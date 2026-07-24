@@ -137,7 +137,6 @@ function playerStatus(player: PlayerSession): string {
             v-model="displayName"
             maxlength="20"
             autocomplete="nickname"
-            placeholder="Peachy player"
             required
           >
         </label>
