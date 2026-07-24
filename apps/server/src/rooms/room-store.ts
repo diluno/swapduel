@@ -408,6 +408,7 @@ export class RoomStore {
     playerId: string,
     matchId: string,
     roundId: string,
+    options: { allowSettledRound?: boolean } = {},
   ): { roomId: string; targetPlayerId: string } {
     const room = [...this.roomsById.values()].find(
       (candidate) => candidate.activeMatchId === matchId,
@@ -417,12 +418,26 @@ export class RoomStore {
       room === undefined ||
       activeRound === null ||
       activeRound === undefined ||
-      activeRound.preparation.roundId !== roundId ||
-      activeRound.endedResult !== null ||
-      activeRound.startAt === null ||
-      room.status !== 'playing' ||
-      activeRound.networkPausedAt !== null ||
-      (activeRound.resumeAt !== null && this.now() < activeRound.resumeAt)
+      activeRound.preparation.roundId !== roundId
+    ) {
+      throw new RoomStoreError(
+        'STALE_MATCH',
+        'This gameplay event belongs to an inactive round.',
+      )
+    }
+
+    // A settled round still authorizes a late report from the round it
+    // settled. A losing board frequently tops out a moment after the round
+    // was already decided, and that race is ordinary, not an error.
+    const roundIsSettled = activeRound.endedResult !== null
+    if (
+      !(options.allowSettledRound === true && roundIsSettled) &&
+      (activeRound.endedResult !== null ||
+        activeRound.startAt === null ||
+        room.status !== 'playing' ||
+        activeRound.networkPausedAt !== null ||
+        (activeRound.resumeAt !== null &&
+          this.now() < activeRound.resumeAt))
     ) {
       throw new RoomStoreError(
         'STALE_MATCH',
@@ -720,6 +735,7 @@ export class RoomStore {
       playerId,
       matchId,
       roundId,
+      { allowSettledRound: true },
     )
     const room = this.roomsById.get(authorization.roomId)!
     const activeRound = room.activeRound!

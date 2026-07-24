@@ -1270,4 +1270,64 @@ describe('RoomStore', () => {
       },
     })
   })
+
+  it('returns the settled result for a top-out reported after the round ended', () => {
+    const clock = { now: 1_000 }
+    const store = createStore(clock)
+    const host = store.create('Mira', 'socket-1')
+    const guest = store.join('ROOM01', 'Noah', 'socket-2')
+    for (const player of [host, guest]) {
+      store.setReady(
+        player.roomState.roomId,
+        player.playerId,
+        player.reconnectToken,
+        true,
+      )
+    }
+    const { preparation } = store.startMatch(
+      host.roomState.roomId,
+      host.playerId,
+      host.reconnectToken,
+    )
+    for (const player of [host, guest]) {
+      store.markRoundReady(
+        player.roomState.roomId,
+        player.playerId,
+        player.reconnectToken,
+        preparation.matchId,
+        preparation.roundId,
+      )
+    }
+
+    store.reportTopOut(
+      'socket-1',
+      host.playerId,
+      preparation.matchId,
+      preparation.roundId,
+    )
+    clock.now = 1_150
+    store.resolvePendingTopOut(
+      preparation.matchId,
+      preparation.roundId,
+    )
+
+    // The loser's own board tops out a moment after the round was already
+    // settled. That is an ordinary end-of-round race, not an error: the
+    // report should come back with the settled result.
+    clock.now = 1_400
+    const late = store.reportTopOut(
+      'socket-2',
+      guest.playerId,
+      preparation.matchId,
+      preparation.roundId,
+    )
+    expect(late.resolveAt).toBeNull()
+    expect(late.resolution).toMatchObject({
+      roundEnded: {
+        result: 'win',
+        winnerPlayerId: guest.playerId,
+        loserPlayerId: host.playerId,
+      },
+    })
+  })
 })

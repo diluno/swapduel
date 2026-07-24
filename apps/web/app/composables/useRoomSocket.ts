@@ -425,6 +425,7 @@ export function useRoomSocket() {
         if (parsed.success) {
           matchScores.value = []
           matchResult.value = null
+          errorMessage.value = ''
           if (import.meta.client) {
             sessionStorage.removeItem(MATCH_RESULT_KEY)
           }
@@ -433,11 +434,19 @@ export function useRoomSocket() {
       })
       socket.on('round:prepare', (payload: unknown) => {
         const parsed = roundPreparationSchema.safeParse(payload)
-        if (parsed.success) persistRoundPreparation(parsed.data)
+        if (parsed.success) {
+          // A notice from the previous round must not follow the player
+          // into the next one; errorMessage is app-wide shared state.
+          errorMessage.value = ''
+          persistRoundPreparation(parsed.data)
+        }
       })
       socket.on('round:starting', (payload: unknown) => {
         const parsed = roundStartingSchema.safeParse(payload)
-        if (parsed.success) persistRoundStarting(parsed.data)
+        if (parsed.success) {
+          errorMessage.value = ''
+          persistRoundStarting(parsed.data)
+        }
       })
       socket.on('opponent:snapshot', (payload: unknown) => {
         const parsed = boardSnapshotSchema.safeParse(payload)
