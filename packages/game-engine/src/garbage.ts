@@ -1,3 +1,4 @@
+import { defaultGameConfig } from './config'
 import { randomInteger } from './random'
 import type {
   Board,
@@ -207,7 +208,9 @@ function validateIncomingBlock(
 
 export function enqueueIncomingGarbage(
   state: SimulationState,
-  attack: IncomingGarbageAttack,
+  attack: Omit<IncomingGarbageAttack, 'readyAt'> &
+    Partial<Pick<IncomingGarbageAttack, 'readyAt'>>,
+  config: GameConfig = defaultGameConfig,
 ): SimulationState {
   if (
     attack.attackId.trim() === '' ||
@@ -229,6 +232,9 @@ export function enqueueIncomingGarbage(
     {
       ...attack,
       blocks: attack.blocks.map((block) => ({ ...block })),
+      // The attack is visible in the queue for a beat before it can land, so
+      // the defender gets a fair window to answer with a chain.
+      readyAt: attack.readyAt ?? state.elapsedMs + config.timing.garbageTelegraphMs,
     },
   ].sort(
     (left, right) =>

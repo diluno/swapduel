@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   createSimulation,
+  defaultGameConfig,
   enqueueIncomingGarbage,
   findMatches,
   requestSwap,
@@ -43,6 +44,34 @@ function advanceUntil(
 }
 
 describe('incoming garbage', () => {
+  it('telegraphs an attack before letting it drop', () => {
+    const initial = createSimulation('garbage-telegraph')
+    const queued = enqueueIncomingGarbage(initial, {
+      attackId: 'telegraphed',
+      serverSequence: 1,
+      blocks: [{ width: 3, height: 1, type: 'normal' }],
+    })
+    const { garbageTelegraphMs, fixedStepMs } = defaultGameConfig.timing
+
+    expect(queued.incomingGarbage[0]!.readyAt).toBe(
+      queued.elapsedMs + garbageTelegraphMs,
+    )
+
+    // The whole warning window passes with the attack still visible in the
+    // queue and nothing on the board.
+    let state = queued
+    const heldSteps = Math.floor(garbageTelegraphMs / fixedStepMs) - 1
+    for (let step = 0; step < heldSteps; step += 1) {
+      state = stepSimulation(state)
+      expect(state.garbage).toHaveLength(0)
+      expect(state.incomingGarbage).toHaveLength(1)
+    }
+
+    const dropped = advanceUntil(state, ({ garbage }) => garbage.length > 0)
+    expect(dropped.incomingGarbage).toHaveLength(0)
+    expect(dropped.garbage[0]!.width).toBe(3)
+  })
+
   it('orders incoming attacks and ignores duplicate attack IDs', () => {
     const initial = createSimulation('garbage-ordering')
     const second = enqueueIncomingGarbage(initial, {

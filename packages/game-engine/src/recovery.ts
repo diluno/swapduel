@@ -183,6 +183,8 @@ function isIncomingAttack(value: unknown): value is IncomingGarbageAttack {
     value.attackId.length > 0 &&
     value.attackId.length <= 128 &&
     isInteger(value.serverSequence) &&
+    typeof value.readyAt === 'number' &&
+    Number.isFinite(value.readyAt) &&
     hasAttackBlocks(value.blocks)
   )
 }

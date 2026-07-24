@@ -1,3 +1,5 @@
+import { defaultGameConfig } from '@swapduel/game-engine'
+
 type OscillatorKind = OscillatorType
 
 interface ToneOptions {
@@ -156,39 +158,65 @@ export function useGameAudio() {
     })
   }
 
-  function playClear(normalSize: number, chainLevel: number): void {
+  // One ping per panel, spaced to land with that panel's pop. The renderer
+  // staggers by the engine's panelPopIntervalMs and the engine holds the board
+  // for the whole sequence, so the arpeggio and the visual stay locked together.
+  function playClear(
+    normalSize: number,
+    chainLevel: number,
+    panelCount = normalSize,
+  ): void {
+    const popGap =
+      defaultGameConfig.timing.panelPopIntervalMs / 1_000
     withAudio((context) => {
-      const now = context.currentTime
+      // The clear event fires when the match is found, but panels do not start
+      // popping until the flash has run its course.
+      const now =
+        context.currentTime +
+        defaultGameConfig.timing.matchFlashDurationMs / 1_000
+      const pops = Math.max(1, Math.min(12, panelCount))
+
       if (chainLevel > 1) {
-        const notes = [392, 523.25, 659.25, 783.99, 1046.5]
-        const noteCount = Math.min(notes.length, chainLevel + 2)
-        for (let note = 0; note < noteCount; note += 1) {
-          scheduleTone(context, notes[note]!, now + note * 0.065, 0.2, {
-            type: note % 2 === 0 ? 'triangle' : 'sine',
-            volume: 0.13,
-          })
+        const notes = [392, 523.25, 659.25, 783.99, 1046.5, 1318.51]
+        for (let pop = 0; pop < pops; pop += 1) {
+          scheduleTone(
+            context,
+            notes[Math.min(notes.length - 1, pop)]!,
+            now + pop * popGap,
+            0.2,
+            {
+              type: pop % 2 === 0 ? 'triangle' : 'sine',
+              volume: 0.13,
+            },
+          )
         }
         return
       }
 
       if (normalSize >= 4) {
-        const notes = [440, 554.37, 659.25, 880, 1108.73]
-        const noteCount = Math.min(notes.length, normalSize - 1)
-        for (let note = 0; note < noteCount; note += 1) {
-          scheduleTone(context, notes[note]!, now + note * 0.052, 0.17, {
-            type: 'triangle',
-            volume: 0.12,
-          })
+        const notes = [440, 554.37, 659.25, 880, 1108.73, 1318.51]
+        for (let pop = 0; pop < pops; pop += 1) {
+          scheduleTone(
+            context,
+            notes[Math.min(notes.length - 1, pop)]!,
+            now + pop * popGap,
+            0.17,
+            { type: 'triangle', volume: 0.12 },
+          )
         }
         scheduleNoise(context, now + 0.02, 0.1, 0.035, 2_800)
         return
       }
 
-      for (const [note, frequency] of [523.25, 659.25, 783.99].entries()) {
-        scheduleTone(context, frequency, now + note * 0.035, 0.13, {
-          type: 'sine',
-          volume: 0.1,
-        })
+      const notes = [523.25, 659.25, 783.99]
+      for (let pop = 0; pop < pops; pop += 1) {
+        scheduleTone(
+          context,
+          notes[Math.min(notes.length - 1, pop)]!,
+          now + pop * popGap,
+          0.13,
+          { type: 'sine', volume: 0.1 },
+        )
       }
     })
   }
@@ -203,6 +231,52 @@ export function useGameAudio() {
         endFrequency: 58,
       })
       scheduleNoise(context, now, 0.15, 0.08, 720)
+    })
+  }
+
+  // A slab hitting the stack: a short body thud plus a filtered noise crack,
+  // both scaled by how much garbage landed.
+  function playGarbageLanded(cells: number): void {
+    if (recentlyPlayed('garbage-landed', 70)) return
+    const weight = Math.min(1, 0.35 + cells / 14)
+    withAudio((context) => {
+      const now = context.currentTime
+      scheduleTone(context, 96 - weight * 26, now, 0.16 + weight * 0.1, {
+        type: 'sine',
+        volume: 0.1 + weight * 0.1,
+        endFrequency: 34,
+      })
+      scheduleNoise(
+        context,
+        now,
+        0.07 + weight * 0.06,
+        0.05 + weight * 0.07,
+        320 + weight * 240,
+      )
+    })
+  }
+
+  // Panic escalation: a heartbeat that gets louder and faster as the stack
+  // climbs. Called every frame with the current intensity; the throttle gap is
+  // what actually sets the tempo.
+  function playPanic(intensity: number): void {
+    if (intensity < 0.15) return
+    const level = Math.min(1, intensity)
+    const beatGapMs = 900 - level * 560
+    if (recentlyPlayed('panic', beatGapMs)) return
+    withAudio((context) => {
+      const now = context.currentTime
+      const volume = 0.05 + level * 0.09
+      for (const [beat, offset] of [0, 0.13].entries()) {
+        scheduleTone(context, beat === 0 ? 74 : 62, now + offset, 0.11, {
+          type: 'sine',
+          volume: beat === 0 ? volume : volume * 0.72,
+          endFrequency: beat === 0 ? 46 : 38,
+        })
+      }
+      if (level > 0.55) {
+        scheduleNoise(context, now, 0.06, 0.02 * level, 420)
+      }
     })
   }
 
@@ -295,6 +369,8 @@ export function useGameAudio() {
     playSwap,
     playClear,
     playGarbageReceived,
+    playGarbageLanded,
+    playPanic,
     playDanger,
     playRoundResult,
     toggleSound,

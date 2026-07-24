@@ -11,6 +11,10 @@ import {
   stepSimulation,
 } from '@swapduel/game-engine'
 import { drawBoard } from '~/game/renderer/drawBoard'
+import {
+  createImpactTracker,
+  panicIntensity,
+} from '~/game/renderer/impact'
 
 if (!import.meta.dev) {
   throw createError({ statusCode: 404, statusMessage: 'Page not found' })
@@ -31,9 +35,25 @@ const {
   playSwap,
   playClear,
   playGarbageReceived,
+  playGarbageLanded,
+  playPanic,
   playDanger,
   toggleSound,
 } = useGameAudio()
+const impactTracker = createImpactTracker()
+const { cursor, cursorVisible, hideCursor } = useBoardCursor({
+  columns: () => state.value.board.columns,
+  visibleRows: () => state.value.board.visibleRows,
+  isLive: () => state.value.status === 'playing',
+  swap: (row, column, direction) => trySwap(row, column, direction),
+  setRaise: (raising) => {
+    state.value = setManualRaise(state.value, raising)
+  },
+  onChange: () => {
+    selected.value = null
+    render()
+  },
+})
 
 let animationFrame = 0
 let previousTimestamp = 0
@@ -62,7 +82,10 @@ function render(): void {
   if (canvas.value === null) return
   drawBoard(canvas.value, state.value, {
     selected: selected.value,
+    cursor: cursorVisible.value ? cursor.value : null,
     reducedMotion: reducedMotion.value,
+    impact: impactTracker.state,
+    panic: panicIntensity(state.value),
   })
 }
 
@@ -70,8 +93,11 @@ function playSimulationSounds(): void {
   const clear = state.value.lastClearEvent
   if (clear !== null && clear.occurredAt > lastAudioClearAt) {
     lastAudioClearAt = clear.occurredAt
-    playClear(clear.normalSize, clear.chainLevel)
+    playClear(clear.normalSize, clear.chainLevel, clear.size)
   }
+  const landing = impactTracker.observe(state.value)
+  if (landing !== null) playGarbageLanded(landing.cells)
+  playPanic(panicIntensity(state.value))
   if (state.value.dangerRemainingMs !== null) {
     playDanger()
   }
@@ -96,6 +122,7 @@ function animationLoop(timestamp: number): void {
 function reset(): void {
   state.value = createSimulation(seed.value.trim() || 'lab-seed-01')
   lastAudioClearAt = Number.NEGATIVE_INFINITY
+  impactTracker.reset()
   selected.value = null
   jsonState.value = ''
   message.value = `Reset with seed ${state.value.seed}`
@@ -417,6 +444,7 @@ function trySwap(row: number, column: number, direction: -1 | 1): boolean {
 
 function onBoardPointerDown(event: PointerEvent): void {
   unlockAudio()
+  hideCursor()
   if (activePointer !== null) return
   const coordinate = boardCoordinate(event)
   if (coordinate === null) {

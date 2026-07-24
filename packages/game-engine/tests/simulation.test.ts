@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   advanceSimulation,
+  clearPhaseDurationMs,
   createSimulation,
   defaultGameConfig,
   requestSwap,
@@ -90,11 +91,52 @@ describe('fixed-step resolution', () => {
         [2, 0, 'heart'],
       ]),
     }
-    const resolved = advanceSimulation(state, 800)
+    // Flash, then one pop per panel, then the fall delay and gravity.
+    const resolved = advanceSimulation(state, 1_000)
 
     expect(resolved.totalCleared).toBe(3)
     expect(resolved.board.cells[0]![0]?.type).toBe('heart')
     expect(resolved.phase).toBe('idle')
+  })
+
+  it('holds the clear open long enough for every panel to pop', () => {
+    const initial = createSimulation('sequential-pop')
+    const state = {
+      ...initial,
+      board: boardWith([
+        [0, 0, 'circle'],
+        [0, 1, 'circle'],
+        [0, 2, 'circle'],
+        [0, 3, 'circle'],
+      ]),
+    }
+    const { matchFlashDurationMs, fixedStepMs } = defaultGameConfig.timing
+    // One step goes on detecting the match before the flash even starts.
+    const flashed = advanceSimulation(
+      state,
+      matchFlashDurationMs + fixedStepMs * 2,
+    )
+    expect(flashed.phase).toBe('clearing')
+    expect(flashed.matchedPanelIds).toHaveLength(4)
+
+    // Three pop intervals separate the first panel from the last, so the
+    // board must still be clearing well past the base clear duration.
+    const popTail =
+      clearPhaseDurationMs(4) - defaultGameConfig.timing.clearDurationMs
+    expect(popTail).toBe(
+      3 * defaultGameConfig.timing.panelPopIntervalMs,
+    )
+
+    const midway = advanceSimulation(
+      flashed,
+      defaultGameConfig.timing.clearDurationMs + 1,
+    )
+    expect(midway.phase).toBe('clearing')
+    expect(midway.totalCleared).toBe(0)
+
+    const finished = advanceSimulation(midway, popTail + fixedStepMs * 2)
+    expect(finished.phase).not.toBe('clearing')
+    expect(finished.totalCleared).toBe(4)
   })
 
   it('produces the same checksum for the same seed and actions', () => {

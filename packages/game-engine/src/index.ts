@@ -27,6 +27,7 @@ export {
 } from './recovery'
 export {
   advanceSimulation,
+  clearPhaseDurationMs,
   createSimulation,
   drainOutgoingAttacks,
   requestSwap,

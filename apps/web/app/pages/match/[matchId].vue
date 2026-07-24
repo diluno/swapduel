@@ -18,6 +18,10 @@ import {
 } from '@swapduel/game-engine'
 import { createBoardSnapshot } from '~/game/network/createBoardSnapshot'
 import { drawBoard } from '~/game/renderer/drawBoard'
+import {
+  createImpactTracker,
+  panicIntensity,
+} from '~/game/renderer/impact'
 
 const SIMULATION_SNAPSHOT_KEY = 'swapduel:simulation-snapshot'
 const SIMULATION_SNAPSHOT_INTERVAL_MS = 2_000
@@ -66,10 +70,27 @@ const {
   playSwap,
   playClear,
   playGarbageReceived,
+  playGarbageLanded,
+  playPanic,
   playDanger,
   playRoundResult,
   toggleSound,
 } = useGameAudio()
+const impactTracker = createImpactTracker()
+const { cursor, cursorVisible, hideCursor } = useBoardCursor({
+  columns: () => simulationState.board.columns,
+  visibleRows: () => simulationState.board.visibleRows,
+  isLive: () => isRoundLiveAt(getServerNow()),
+  swap: (row, column, direction) => trySwap(row, column, direction),
+  setRaise: (raising) => {
+    if (raising && !isRoundLiveAt(getServerNow())) return
+    simulationState = setManualRaise(simulationState, raising)
+  },
+  onChange: () => {
+    selected.value = null
+    requestRender()
+  },
+})
 const topOutReported = ref(false)
 const nextRoundReady = ref(false)
 const rematchRequested = ref(false)
@@ -348,6 +369,7 @@ watch(activePreparation, async (preparation) => {
     lastAudioClearAt =
       simulationState.lastClearEvent?.occurredAt ??
       Number.NEGATIVE_INFINITY
+    impactTracker.reset()
     activeStateScopeId = nextScopeId
     await confirmPreparedRound()
   }
@@ -400,7 +422,10 @@ function render(): void {
   if (canvas.value === null) return
   drawBoard(canvas.value, simulationState, {
     selected: selected.value,
+    cursor: cursorVisible.value ? cursor.value : null,
     reducedMotion: reducedMotion.value,
+    impact: impactTracker.state,
+    panic: panicIntensity(simulationState),
   })
 }
 
@@ -491,8 +516,14 @@ function playSimulationSounds(): void {
   const clear = simulationState.lastClearEvent
   if (clear !== null && clear.occurredAt > lastAudioClearAt) {
     lastAudioClearAt = clear.occurredAt
-    playClear(clear.normalSize, clear.chainLevel)
+    playClear(clear.normalSize, clear.chainLevel, clear.size)
   }
+  const landing = impactTracker.observe(simulationState)
+  if (landing !== null) {
+    playGarbageLanded(landing.cells)
+    requestRender()
+  }
+  playPanic(panicIntensity(simulationState))
   if (simulationState.dangerRemainingMs !== null) {
     playDanger()
   }
@@ -747,6 +778,7 @@ function trySwap(row: number, column: number, direction: -1 | 1): boolean {
 
 function onBoardPointerDown(event: PointerEvent): void {
   unlockAudio()
+  hideCursor()
   if (!roundIsLive.value || activePointer !== null) return
   const coordinate = boardCoordinate(event)
   if (coordinate === null) {

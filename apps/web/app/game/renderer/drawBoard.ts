@@ -1,8 +1,14 @@
-import type {
-  GarbageBlock,
-  PanelType,
-  SimulationState,
+import {
+  defaultGameConfig,
+  type GarbageBlock,
+  type PanelType,
+  type SimulationState,
 } from '@swapduel/game-engine'
+import {
+  SQUASH_DURATION_MS,
+  shakeOffset,
+  type ImpactState,
+} from './impact'
 
 const PANEL_COLORS: Record<
   PanelType,
@@ -21,7 +27,13 @@ const COMBO_EFFECT_DURATION_MS = 1_100
 
 interface DrawBoardOptions {
   selected: { row: number; column: number } | null
+  /** Two-wide keyboard cursor; `column` is its left cell. */
+  cursor?: { row: number; column: number } | null
   reducedMotion: boolean
+  /** Landing shake + squash bookkeeping; omit to draw a perfectly still board. */
+  impact?: ImpactState | null
+  /** 0..1 panic escalation as the stack nears the top. */
+  panic?: number
 }
 
 function roundedRect(
@@ -668,6 +680,147 @@ function drawComboEffect(
   context.restore()
 }
 
+// Panels of a clear pop one at a time, top row first and left to right within
+// a row — the reading order the SNES uses. The engine holds the board for
+// exactly this long (see clearPhaseDurationMs), so the stagger is real rather
+// than a renderer illusion.
+function popOrder(state: SimulationState): Map<number, number> {
+  const matchedIds = new Set(state.matchedPanelIds)
+  const matched: { id: number; row: number; column: number }[] = []
+  for (const row of state.board.cells) {
+    for (const panel of row) {
+      if (panel !== null && matchedIds.has(panel.id)) matched.push(panel)
+    }
+  }
+  matched.sort((a, b) => b.row - a.row || a.column - b.column)
+  return new Map(matched.map((panel, index) => [panel.id, index]))
+}
+
+// The board goes redder and breathes faster the closer the stack gets to the
+// top, so danger is legible from peripheral vision alone.
+function drawPanicTint(
+  context: CanvasRenderingContext2D,
+  panic: number,
+  elapsedMs: number,
+  cssWidth: number,
+  cssHeight: number,
+  cellSize: number,
+  reducedMotion: boolean,
+): void {
+  if (panic <= 0.02) return
+
+  // 0.9 Hz when the stack first gets uncomfortable, ~2.4 Hz at the top.
+  const pulseHz = 0.9 + panic * 1.5
+  const pulse = reducedMotion
+    ? 0.5
+    : (1 - Math.cos((elapsedMs / 1_000) * pulseHz * Math.PI * 2)) / 2
+  const strength = panic * (0.45 + pulse * 0.55)
+
+  context.save()
+  const vignette = context.createLinearGradient(0, 0, 0, cssHeight)
+  vignette.addColorStop(0, `rgba(240, 96, 108, ${0.3 * strength})`)
+  vignette.addColorStop(0.45, `rgba(240, 96, 108, ${0.09 * strength})`)
+  vignette.addColorStop(1, `rgba(240, 96, 108, ${0.03 * strength})`)
+  context.fillStyle = vignette
+  context.fillRect(0, 0, cssWidth, cssHeight)
+
+  context.strokeStyle = `rgba(237, 106, 69, ${0.55 * strength})`
+  context.lineWidth = Math.max(3, cellSize * 0.12)
+  context.strokeRect(
+    context.lineWidth / 2,
+    context.lineWidth / 2,
+    cssWidth - context.lineWidth,
+    cssHeight - context.lineWidth,
+  )
+  context.restore()
+}
+
+// Queued attacks sit above the stack as charging chips — one per block, as
+// wide as the slab it will drop — so the defender can see what is coming and
+// how long they have to answer it.
+function drawTelegraphQueue(
+  context: CanvasRenderingContext2D,
+  state: SimulationState,
+  cssWidth: number,
+  cellSize: number,
+  reducedMotion: boolean,
+): void {
+  if (state.incomingGarbage.length === 0) return
+
+  const chips: { width: number; height: number; type: string; charge: number }[] =
+    []
+  for (const attack of state.incomingGarbage) {
+    const remaining = Math.max(0, attack.readyAt - state.elapsedMs)
+    const charge =
+      1 -
+      Math.min(
+        1,
+        remaining / defaultGameConfig.timing.garbageTelegraphMs,
+      )
+    for (const block of attack.blocks) {
+      chips.push({ ...block, charge })
+      if (chips.length >= 6) break
+    }
+    if (chips.length >= 6) break
+  }
+
+  const gap = cellSize * 0.1
+  const height = cellSize * 0.3
+  const top = cellSize * 0.12
+  // Chips are sized in board columns so a slab's chip is as wide as the slab,
+  // but the row is scaled down once the queue asks for more than a board's
+  // worth — otherwise a full-width attack, or several at once, would overflow.
+  const requestedUnits = chips.reduce((sum, chip) => sum + chip.width, 0)
+  const available = cssWidth - gap * (chips.length + 1)
+  const unit = available / Math.max(requestedUnits, state.board.columns)
+  let x = gap
+
+  for (const chip of chips) {
+    const width = Math.max(cellSize * 0.3, unit * chip.width)
+    const isMetal = chip.type === 'metal'
+    const radius = height * 0.36
+    const ready = chip.charge >= 1
+    const pulse =
+      ready && !reducedMotion
+        ? (1 + Math.sin(state.elapsedMs / 90)) / 2
+        : 0
+
+    context.save()
+    // Empty shell, then the charge fills it left to right.
+    roundedRect(context, x, top, width, height, radius)
+    context.fillStyle = 'rgba(110, 86, 72, 0.16)'
+    context.fill()
+
+    context.save()
+    roundedRect(context, x, top, width, height, radius)
+    context.clip()
+    context.fillStyle = isMetal ? '#adc7d8' : '#cfb5a3'
+    context.fillRect(x, top, width * chip.charge, height)
+    context.fillStyle = 'rgba(255, 250, 245, 0.4)'
+    context.fillRect(x, top, width * chip.charge, height * 0.34)
+    // A tall slab reads as two stacked bars.
+    if (chip.height > 1) {
+      context.strokeStyle = 'rgba(110, 86, 72, 0.35)'
+      context.lineWidth = Math.max(1, cellSize * 0.02)
+      context.beginPath()
+      context.moveTo(x, top + height / 2)
+      context.lineTo(x + width * chip.charge, top + height / 2)
+      context.stroke()
+    }
+    context.restore()
+
+    roundedRect(context, x, top, width, height, radius)
+    context.strokeStyle = ready
+      ? `rgba(237, 106, 69, ${0.55 + pulse * 0.45})`
+      : 'rgba(110, 86, 72, 0.32)'
+    context.lineWidth = Math.max(1.5, cellSize * (ready ? 0.045 : 0.025))
+    context.stroke()
+    context.restore()
+
+    x += width + gap
+  }
+}
+
 export function drawBoard(
   canvas: HTMLCanvasElement,
   state: SimulationState,
@@ -696,6 +849,30 @@ export function drawBoard(
   context.fillRect(0, 0, cssWidth, cssHeight)
 
   const sprites = panelSpritesFor(cellSize, dpr)
+  const impact = options.impact ?? null
+  const panic = options.panic ?? 0
+
+  // Everything that belongs to the well — grid, garbage, panels, cursor, the
+  // rise and danger lines — rides the shake together. The background fill above
+  // stays put so no gap opens at the edges, and the badges and overlays drawn
+  // after the restore stay readable while the board is thrashing.
+  context.save()
+  if (!options.reducedMotion) {
+    const shake =
+      impact === null
+        ? { x: 0, y: 0 }
+        : shakeOffset(impact, state.elapsedMs)
+    // A steady tremble under panic, on top of any landing shake.
+    const tremble = panic * 0.012
+    const trembleX =
+      tremble === 0 ? 0 : Math.sin(state.elapsedMs * 0.031) * tremble
+    const trembleY =
+      tremble === 0 ? 0 : Math.sin(state.elapsedMs * 0.047) * tremble
+    context.translate(
+      (shake.x + trembleX) * cellSize,
+      (shake.y + trembleY) * cellSize,
+    )
+  }
 
   context.strokeStyle = 'rgba(196, 120, 80, 0.1)'
   context.lineWidth = 1
@@ -721,6 +898,23 @@ export function drawBoard(
       (visualRow + block.height + state.riseOffset) * cellSize
     const width = block.width * cellSize
     const height = block.height * cellSize
+
+    // Squash on impact: the slab flattens against the stack and springs back,
+    // pinned to its own bottom edge so it never overlaps what it landed on.
+    const landedAt = impact?.landings.get(block.id)
+    const squashAge =
+      landedAt === undefined ? Number.POSITIVE_INFINITY : state.elapsedMs - landedAt
+    const squashing =
+      !options.reducedMotion && squashAge >= 0 && squashAge < SQUASH_DURATION_MS
+
+    if (squashing) {
+      const progress = squashAge / SQUASH_DURATION_MS
+      const amount = Math.sin(progress * Math.PI) * (1 - progress) * 0.26
+      context.save()
+      context.translate(x + width / 2, y + height)
+      context.scale(1 + amount * 0.5, 1 - amount)
+      context.translate(-(x + width / 2), -(y + height))
+    }
     drawGarbageBlock(
       context,
       block,
@@ -731,6 +925,7 @@ export function drawBoard(
       cellSize,
       options.reducedMotion,
     )
+    if (squashing) context.restore()
   }
 
   const incomingY = cssHeight - state.riseOffset * cellSize
@@ -746,6 +941,11 @@ export function drawBoard(
     drawPanelSprite(context, sprites, type, 'incoming', x, incomingY)
     context.globalAlpha = 1
   }
+
+  const popIndexes =
+    state.phase === 'clearing' && state.matchedPanelIds.length > 0
+      ? popOrder(state)
+      : null
 
   for (const row of state.board.cells) {
     for (const panel of row) {
@@ -767,15 +967,47 @@ export function drawBoard(
       const y =
         cssHeight -
         (panel.row + 1 + state.riseOffset) * cellSize
-      const flashing =
+      let flashing =
         panel.state === 'flashing' &&
         !options.reducedMotion &&
         Math.floor((state.elapsedMs - (panel.animationStartedAt ?? 0)) / 70) % 2 ===
           0
-      const alpha =
-        panel.state === 'clearing' ? Math.max(0.12, 1 - phaseProgress) : 1
+      let alpha = 1
+      // Scale applied around the panel's centre as it pops.
+      let popScale = 1
+
+      if (panel.state === 'clearing') {
+        const popIndex = popIndexes?.get(panel.id) ?? 0
+        const popStart =
+          (panel.animationStartedAt ?? state.elapsedMs) +
+          popIndex * defaultGameConfig.timing.panelPopIntervalMs
+        const popElapsed = state.elapsedMs - popStart
+
+        if (popElapsed < 0) {
+          // Waiting its turn: hold the white flash so the queue reads as
+          // "these are all going".
+          flashing = !options.reducedMotion
+        } else {
+          const popProgress = Math.min(
+            1,
+            popElapsed / defaultGameConfig.timing.clearDurationMs,
+          )
+          alpha = Math.max(0.12, 1 - popProgress)
+          if (!options.reducedMotion) {
+            // A quick swell before it collapses.
+            popScale =
+              1 + Math.sin(Math.min(1, popProgress * 1.6) * Math.PI) * 0.16
+          }
+        }
+      }
 
       if (alpha !== 1) context.globalAlpha = alpha
+      if (popScale !== 1) {
+        context.save()
+        context.translate(x + cellSize / 2, y + cellSize / 2)
+        context.scale(popScale, popScale)
+        context.translate(-(x + cellSize / 2), -(y + cellSize / 2))
+      }
       drawPanelSprite(
         context,
         sprites,
@@ -784,6 +1016,7 @@ export function drawBoard(
         x,
         y,
       )
+      if (popScale !== 1) context.restore()
       if (alpha !== 1) context.globalAlpha = 1
     }
   }
@@ -806,14 +1039,49 @@ export function drawBoard(
     context.stroke()
   }
 
-  drawComboEffect(
-    context,
-    state,
-    cssWidth,
-    cssHeight,
-    cellSize,
-    options.reducedMotion,
-  )
+  if (options.cursor != null) {
+    // The signature two-wide box: a dark outline under a bright one so it
+    // stays readable over any panel colour, breathing gently in place.
+    const breathe = options.reducedMotion
+      ? 0
+      : Math.sin(state.elapsedMs / 260) * cellSize * 0.018
+    const x = options.cursor.column * cellSize - breathe
+    const y =
+      cssHeight -
+      (options.cursor.row + 1 + state.riseOffset) * cellSize -
+      breathe
+    const width = cellSize * 2 + breathe * 2
+    const height = cellSize + breathe * 2
+    const radius = cellSize * 0.22
+
+    context.save()
+    context.lineJoin = 'round'
+    roundedRect(context, x, y, width, height, radius)
+    context.strokeStyle = 'rgba(110, 86, 72, 0.62)'
+    context.lineWidth = Math.max(6, cellSize * 0.135)
+    context.stroke()
+    context.strokeStyle = '#fffaf5'
+    context.lineWidth = Math.max(3, cellSize * 0.07)
+    context.stroke()
+
+    // Corner ticks, so the two halves read as one grabbing cursor.
+    context.strokeStyle = 'rgba(237, 106, 69, 0.9)'
+    context.lineWidth = Math.max(2, cellSize * 0.05)
+    context.lineCap = 'round'
+    const tick = cellSize * 0.18
+    for (const [cornerX, cornerY, dirX, dirY] of [
+      [x, y, 1, 1],
+      [x + width, y, -1, 1],
+      [x, y + height, 1, -1],
+      [x + width, y + height, -1, -1],
+    ] as const) {
+      context.beginPath()
+      context.moveTo(cornerX + dirX * radius, cornerY + dirY * tick * 0.2)
+      context.lineTo(cornerX + dirX * (radius + tick), cornerY)
+      context.stroke()
+    }
+    context.restore()
+  }
 
   const riseY = cssHeight - state.riseOffset * cellSize
   context.save()
@@ -827,16 +1095,49 @@ export function drawBoard(
   context.restore()
 
   if (state.dangerRemainingMs !== null && state.status !== 'lost') {
-    const dangerY = cellSize
     context.save()
     context.strokeStyle = 'rgba(240, 96, 108, 0.35)'
     context.lineWidth = 2
     context.setLineDash([cellSize * 0.17, cellSize * 0.12])
     context.beginPath()
-    context.moveTo(0, dangerY)
-    context.lineTo(cssWidth, dangerY)
+    context.moveTo(0, cellSize)
+    context.lineTo(cssWidth, cellSize)
     context.stroke()
+    context.restore()
+  }
 
+  context.restore()
+
+  drawPanicTint(
+    context,
+    panic,
+    state.elapsedMs,
+    cssWidth,
+    cssHeight,
+    cellSize,
+    options.reducedMotion,
+  )
+
+  drawTelegraphQueue(
+    context,
+    state,
+    cssWidth,
+    cellSize,
+    options.reducedMotion,
+  )
+
+  drawComboEffect(
+    context,
+    state,
+    cssWidth,
+    cssHeight,
+    cellSize,
+    options.reducedMotion,
+  )
+
+  if (state.dangerRemainingMs !== null && state.status !== 'lost') {
+    const dangerY = cellSize
+    context.save()
     const labelWidth = Math.min(cssWidth * 0.62, cellSize * 3.4)
     const labelHeight = Math.max(25, cellSize * 0.48)
     roundedRect(

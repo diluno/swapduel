@@ -71,6 +71,11 @@ export interface IncomingGarbageAttack {
   attackId: string
   serverSequence: number
   blocks: AttackBlock[]
+  /**
+   * Simulation time at which this attack may start dropping. Until then it
+   * sits in the telegraph queue where the defender can see it coming.
+   */
+  readyAt: number
 }
 
 export interface GarbageBlock {
@@ -184,11 +189,15 @@ export interface TimingConfig {
   swapDurationMs: number
   matchFlashDurationMs: number
   clearDurationMs: number
+  /** Gap between one panel of a clear popping and the next. */
+  panelPopIntervalMs: number
   fallDelayMs: number
   fallCellsPerSecond: number
   garbageFallCellsPerSecond: number
   garbageCellConvertMs: number
   garbageReleaseDelayMs: number
+  /** How long an incoming attack is telegraphed before it can drop. */
+  garbageTelegraphMs: number
   chainWindowMs: number
   comboStopBaseMs: number
   comboStopPerPanelMs: number

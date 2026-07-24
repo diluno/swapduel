@@ -32,6 +32,20 @@ import type {
 } from './types'
 import { NORMAL_PANEL_TYPES } from './types'
 
+/**
+ * How long the clearing phase runs for a match of `panelCount` panels: every
+ * panel waits its turn to pop, and the last one still gets a full fade.
+ */
+export function clearPhaseDurationMs(
+  panelCount: number,
+  config: GameConfig = defaultGameConfig,
+): number {
+  return (
+    config.timing.clearDurationMs +
+    Math.max(0, panelCount - 1) * config.timing.panelPopIntervalMs
+  )
+}
+
 function cloneCells(board: Board): Board['cells'] {
   return board.cells.map((row) =>
     row.map((panel) => (panel === null ? null : { ...panel })),
@@ -528,9 +542,14 @@ function advanceResolution(
     }
   }
 
+  // Panels pop one at a time rather than all at once, so the clear lasts until
+  // the last one has had its own fade. Keeping this in the simulation (instead
+  // of faking the stagger in the renderer) means both clients agree on when the
+  // board comes back to life, and a bigger match genuinely takes longer to
+  // resolve — as it does on the SNES.
   if (
     state.phase === 'clearing' &&
-    phaseElapsed >= config.timing.clearDurationMs
+    phaseElapsed >= clearPhaseDurationMs(state.matchedPanelIds.length, config)
   ) {
     const cells = state.board.cells.map((row) =>
       row.map((panel) =>
@@ -703,7 +722,13 @@ function advanceGarbageLifecycle(
       ({ state: blockState }) => blockState === 'falling',
     )
 
-  if (!safeToInsert || advanced.incomingGarbage.length === 0) {
+  const nextAttack = advanced.incomingGarbage[0]
+  if (
+    !safeToInsert ||
+    nextAttack === undefined ||
+    // Held in the telegraph queue until its warning has run.
+    advanced.elapsedMs < nextAttack.readyAt
+  ) {
     return advanced
   }
 
@@ -1092,7 +1117,9 @@ export function simulationChecksum(state: SimulationState): string {
     state.incomingGarbage
       .map(
         (attack) =>
-          `${attack.attackId}@${attack.serverSequence}:${attack.blocks
+          `${attack.attackId}@${attack.serverSequence}!${attack.readyAt.toFixed(
+            4,
+          )}:${attack.blocks
             .map((block) => `${block.width}x${block.height}:${block.type}`)
             .join('+')}`,
       )
