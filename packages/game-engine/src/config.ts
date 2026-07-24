@@ -20,7 +20,7 @@ export const defaultGameConfig: GameConfig = {
     garbageCellConvertMs: 45,
     garbageReleaseDelayMs: 150,
     chainWindowMs: 250,
-    dangerGraceMs: 1800,
+    dangerGraceMs: 3000,
   },
   rise: {
     startingRowsPerSecond: 0.05,

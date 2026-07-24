@@ -676,7 +676,7 @@ Initial configuration:
 
 ```ts
 export const dangerConfig = {
-  graceMs: 1800,
+  graceMs: 3000,
 }
 ```
 
@@ -1193,7 +1193,7 @@ export const gameTiming = {
   garbageReleaseDelayMs: 150,
 
   chainWindowMs: 250,
-  dangerGraceMs: 1800,
+  dangerGraceMs: 3000,
 
   opponentSnapshotIntervalMs: 100,
   ownChecksumIntervalMs: 1000,

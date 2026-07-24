@@ -20,9 +20,11 @@ import { createBoardSnapshot } from '~/game/network/createBoardSnapshot'
 import { drawBoard } from '~/game/renderer/drawBoard'
 
 const SIMULATION_SNAPSHOT_KEY = 'swapduel:simulation-snapshot'
-const SIMULATION_SNAPSHOT_INTERVAL_MS = 500
+const SIMULATION_SNAPSHOT_INTERVAL_MS = 2_000
 const SIMULATION_SNAPSHOT_MAX_AGE_MS = 35_000
 const CHECKSUM_INTERVAL_MS = 2_000
+const RENDER_INTERVAL_MS = 30
+const UI_UPDATE_INTERVAL_MS = 100
 
 const route = useRoute()
 const now = ref(Date.now())
@@ -105,6 +107,9 @@ const state = shallowRef(
     : restoreLocalSimulation(initialPreparation) ??
         createSimulation(initialPreparation.roundSeed),
 )
+// Keep the 60 Hz engine state out of Vue's render cycle. The shallow ref is a
+// lower-frequency view used only by status controls around the canvas.
+let simulationState = state.value
 let activeStateScopeId =
   initialPreparation === null ? null : recoveryScopeId(initialPreparation)
 const ownPlayer = computed(() =>
@@ -204,11 +209,14 @@ const networkStatusLabel = computed(() => {
 let animationFrame = 0
 let previousTimestamp = 0
 let accumulatorMs = 0
+let lastRenderAt = 0
+let lastUiUpdateAt = 0
 let lastSnapshotAt = 0
 let lastRecoverySnapshotAt = 0
 let lastChecksumSequence =
-  Math.floor(state.value.elapsedMs / CHECKSUM_INTERVAL_MS) - 1
+  Math.floor(simulationState.elapsedMs / CHECKSUM_INTERVAL_MS) - 1
 let snapshotSequence = 0
+let renderRequested = true
 let resizeObserver: ResizeObserver | null = null
 let raiseTimer: ReturnType<typeof setTimeout> | null = null
 let localDisconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -255,7 +263,7 @@ function persistLocalSimulationSnapshot(force = false): void {
     sessionStorage.setItem(
       SIMULATION_SNAPSHOT_KEY,
       serializeSimulationSnapshot(
-        state.value,
+        simulationState,
         recoveryScopeId(preparation),
         savedAt,
       ),
@@ -292,9 +300,10 @@ watch(activePreparation, async (preparation) => {
     preparation !== null &&
     activeStateScopeId !== nextScopeId
   ) {
-    state.value =
+    simulationState =
       restoreLocalSimulation(preparation) ??
       createSimulation(preparation.roundSeed)
+    state.value = simulationState
     selected.value = null
     snapshotSequence = 0
     topOutReported.value = false
@@ -303,9 +312,12 @@ watch(activePreparation, async (preparation) => {
     localConnectionPaused.value = false
     localPauseStartedAt.value = 0
     acknowledged.value = false
+    renderRequested = true
+    lastRenderAt = 0
+    lastUiUpdateAt = 0
     lastRecoverySnapshotAt = 0
     lastChecksumSequence =
-      Math.floor(state.value.elapsedMs / CHECKSUM_INTERVAL_MS) - 1
+      Math.floor(simulationState.elapsedMs / CHECKSUM_INTERVAL_MS) - 1
     activeStateScopeId = nextScopeId
     await confirmPreparedRound()
   }
@@ -342,26 +354,62 @@ watch(connected, (isConnected) => {
   }, 1_000)
 })
 
-watch(
-  () => state.value.status,
-  async (status) => {
-    if (
-      status === 'lost' &&
-      !topOutReported.value &&
-      activePreparation.value !== null
-    ) {
-      topOutReported.value = true
-      await reportTopOut()
-    }
-  },
-)
-
 function render(): void {
   if (canvas.value === null) return
-  drawBoard(canvas.value, state.value, {
+  drawBoard(canvas.value, simulationState, {
     selected: selected.value,
     reducedMotion: reducedMotion.value,
   })
+}
+
+function requestRender(): void {
+  renderRequested = true
+}
+
+function updateUiState(timestamp: number, serverNow: number): void {
+  if (
+    lastUiUpdateAt !== 0 &&
+    timestamp - lastUiUpdateAt < UI_UPDATE_INTERVAL_MS
+  ) {
+    return
+  }
+  lastUiUpdateAt = timestamp
+  now.value = serverNow
+  state.value = simulationState
+}
+
+function isRoundLiveAt(serverNow: number): boolean {
+  const starting = activeStarting.value
+  if (
+    starting === null ||
+    serverNow < starting.startAt ||
+    roundResult.value?.roundId === activePreparation.value?.roundId ||
+    browserHidden.value ||
+    foregroundSyncing.value
+  ) {
+    return false
+  }
+
+  const resumeAt = networkResume.value?.resumeAt ?? 0
+  const localBlock =
+    localConnectionPaused.value &&
+    (resumeAt <= localPauseStartedAt.value || serverNow < resumeAt)
+  const remoteBlock =
+    networkPause.value !== null &&
+    (resumeAt === 0 || serverNow < resumeAt)
+  return !localBlock && !remoteBlock
+}
+
+function reportTopOutIfNeeded(): void {
+  if (
+    simulationState.status !== 'lost' ||
+    topOutReported.value ||
+    activePreparation.value === null
+  ) {
+    return
+  }
+  topOutReported.value = true
+  void reportTopOut()
 }
 
 function sendCurrentSnapshot(timestamp: number): void {
@@ -372,7 +420,7 @@ function sendCurrentSnapshot(timestamp: number): void {
   snapshotSequence += 1
   sendBoardSnapshot(
     createBoardSnapshot(
-      state.value,
+      simulationState,
       {
         matchId: preparation.matchId,
         roundId: preparation.roundId,
@@ -386,7 +434,7 @@ function sendCurrentSnapshot(timestamp: number): void {
 
 function applyIncomingAttacks(): void {
   for (const attack of drainIncomingAttacks()) {
-    state.value = enqueueIncomingGarbage(state.value, {
+    simulationState = enqueueIncomingGarbage(simulationState, {
       attackId: attack.attackId,
       serverSequence: attack.serverSequence,
       blocks: attack.blocks.map((block) => ({ ...block })),
@@ -396,9 +444,9 @@ function applyIncomingAttacks(): void {
 }
 
 function flushOutgoingAttacks(timestamp: number): void {
-  const drained = drainOutgoingAttacks(state.value)
+  const drained = drainOutgoingAttacks(simulationState)
   if (drained.attacks.length === 0) return
-  state.value = drained.state
+  simulationState = drained.state
 
   const preparation = activePreparation.value
   const playerId = session.value?.playerId
@@ -426,7 +474,7 @@ function sendCurrentChecksum(timestamp: number): void {
   if (preparation === null || playerId === undefined) return
 
   const sequence = Math.floor(
-    state.value.elapsedMs / CHECKSUM_INTERVAL_MS,
+    simulationState.elapsedMs / CHECKSUM_INTERVAL_MS,
   )
   if (sequence <= lastChecksumSequence) return
   lastChecksumSequence = sequence
@@ -437,10 +485,10 @@ function sendCurrentChecksum(timestamp: number): void {
     playerId,
     sequence,
     simulationStep: Math.round(
-      state.value.elapsedMs /
+      simulationState.elapsedMs /
         defaultGameConfig.timing.fixedStepMs,
     ),
-    checksum: simulationChecksum(state.value),
+    checksum: simulationChecksum(simulationState),
     clientTimestamp: timestamp,
   })
 }
@@ -449,29 +497,41 @@ function animationLoop(timestamp: number): void {
   animationFrame = 0
   if (browserHidden.value) return
 
-  now.value = getServerNow()
+  const serverNow = getServerNow()
   if (previousTimestamp === 0) previousTimestamp = timestamp
   const frameDelta = Math.min(100, timestamp - previousTimestamp)
   previousTimestamp = timestamp
 
-  if (roundIsLive.value) {
+  const simulationIsLive = isRoundLiveAt(serverNow)
+  if (simulationIsLive) {
     applyIncomingAttacks()
     accumulatorMs += frameDelta
     while (accumulatorMs >= defaultGameConfig.timing.fixedStepMs) {
-      state.value = stepSimulation(state.value)
+      simulationState = stepSimulation(simulationState)
       accumulatorMs -= defaultGameConfig.timing.fixedStepMs
     }
-    flushOutgoingAttacks(now.value)
-    sendCurrentChecksum(now.value)
+    reportTopOutIfNeeded()
+    flushOutgoingAttacks(serverNow)
+    sendCurrentChecksum(serverNow)
 
     if (timestamp - lastSnapshotAt >= 100) {
       lastSnapshotAt = timestamp
-      sendCurrentSnapshot(now.value)
+      sendCurrentSnapshot(serverNow)
     }
     persistLocalSimulationSnapshot()
   }
 
-  render()
+  updateUiState(timestamp, serverNow)
+  if (
+    renderRequested ||
+    (simulationIsLive &&
+      (lastRenderAt === 0 ||
+        timestamp - lastRenderAt >= RENDER_INTERVAL_MS))
+  ) {
+    render()
+    renderRequested = false
+    lastRenderAt = timestamp
+  }
   animationFrame = requestAnimationFrame(animationLoop)
 }
 
@@ -489,6 +549,8 @@ function suspendForBackground(): void {
   animationFrame = 0
   previousTimestamp = 0
   accumulatorMs = 0
+  lastRenderAt = 0
+  lastUiUpdateAt = 0
   stopRaise()
   selected.value = null
   activePointer = null
@@ -500,7 +562,10 @@ async function resumeFromBackground(): Promise<void> {
   foregroundSyncing.value = true
   previousTimestamp = 0
   accumulatorMs = 0
+  lastRenderAt = 0
+  lastUiUpdateAt = 0
   lastSnapshotAt = 0
+  renderRequested = true
   startAnimationLoop()
   await synchronizeServerClock()
   if (document.hidden) {
@@ -528,18 +593,18 @@ function boardCoordinate(
   const target = canvas.value
   if (target === null) return null
   const bounds = target.getBoundingClientRect()
-  const cellSize = bounds.width / state.value.board.columns
+  const cellSize = bounds.width / simulationState.board.columns
   const column = Math.floor((event.clientX - bounds.left) / cellSize)
   const row = Math.floor(
     (bounds.height - (event.clientY - bounds.top)) / cellSize -
-      state.value.riseOffset,
+      simulationState.riseOffset,
   )
 
   if (
     row < 0 ||
-    row >= state.value.board.visibleRows ||
+    row >= simulationState.board.visibleRows ||
     column < 0 ||
-    column >= state.value.board.columns
+    column >= simulationState.board.columns
   ) {
     return null
   }
@@ -547,10 +612,13 @@ function boardCoordinate(
 }
 
 function trySwap(row: number, column: number, direction: -1 | 1): boolean {
-  if (!roundIsLive.value) return false
-  const result = requestSwap(state.value, { row, column, direction })
-  state.value = result.state
-  if (result.ok) selected.value = null
+  if (!isRoundLiveAt(getServerNow())) return false
+  const result = requestSwap(simulationState, { row, column, direction })
+  simulationState = result.state
+  if (result.ok) {
+    selected.value = null
+    requestRender()
+  }
   return result.ok
 }
 
@@ -592,7 +660,8 @@ function onBoardPointerMove(event: PointerEvent): void {
     bounds === undefined ||
     activePointer.triggered ||
     activePointer.verticalRejected ||
-    Math.abs(horizontal) < (bounds.width / state.value.board.columns) * 0.28
+    Math.abs(horizontal) <
+      (bounds.width / simulationState.board.columns) * 0.28
   ) {
     return
   }
@@ -622,6 +691,7 @@ function onBoardPointerEnd(event: PointerEvent): void {
         )
       } else {
         selected.value = tapped
+        requestRender()
       }
     }
   }
@@ -629,11 +699,11 @@ function onBoardPointerEnd(event: PointerEvent): void {
 }
 
 function startRaise(event: PointerEvent): void {
-  if (!roundIsLive.value) return
+  if (!isRoundLiveAt(getServerNow())) return
   const target = event.currentTarget as HTMLElement
   target.setPointerCapture(event.pointerId)
   raiseTimer = setTimeout(() => {
-    state.value = setManualRaise(state.value, true)
+    simulationState = setManualRaise(simulationState, true)
   }, 80)
 }
 
@@ -642,7 +712,7 @@ function stopRaise(): void {
     clearTimeout(raiseTimer)
     raiseTimer = null
   }
-  state.value = setManualRaise(state.value, false)
+  simulationState = setManualRaise(simulationState, false)
 }
 
 function miniCellStyle(cell: BoardSnapshot['cells'][number]) {
@@ -662,6 +732,8 @@ function miniGarbageStyle(
     bottom: `${((block.row + riseOffset) / 12) * 100}%`,
     width: `${(block.width / 6) * 100}%`,
     height: `${(block.height / 12) * 100}%`,
+    '--garbage-cell-width': `${100 / block.width}%`,
+    '--garbage-cell-height': `${100 / block.height}%`,
   }
 }
 
@@ -778,7 +850,11 @@ onBeforeUnmount(() => {
               v-for="block in opponentSnapshot?.garbage ?? []"
               :key="`garbage-${block.id}`"
               class="mini-garbage"
-              :class="{ metal: block.type === 'metal' }"
+              :class="{
+                metal: block.type === 'metal',
+                falling: block.state === 'falling',
+                converting: block.state === 'converting',
+              }"
               :style="miniGarbageStyle(block)"
             />
             <span v-if="opponentSnapshot === null" class="mini-waiting">
@@ -1104,14 +1180,85 @@ onBeforeUnmount(() => {
 .mini-garbage {
   position: absolute;
   z-index: 2;
-  border: 1px solid rgba(255, 244, 232, 0.8);
-  border-radius: 8px;
-  background: #c9b4a5;
-  transform: scale(0.94);
+  overflow: hidden;
+  border: 1px solid rgba(255, 248, 241, 0.9);
+  border-radius: 7px;
+  background:
+    radial-gradient(
+      circle,
+      rgba(255, 248, 241, 0.68) 0 16%,
+      rgba(110, 78, 61, 0.24) 17% 20%,
+      transparent 21%
+    ),
+    linear-gradient(
+      90deg,
+      transparent calc(100% - 1px),
+      rgba(104, 72, 56, 0.3) 0
+    ),
+    linear-gradient(
+      transparent calc(100% - 1px),
+      rgba(104, 72, 56, 0.3) 0
+    ),
+    linear-gradient(#ead8c8, #cfb5a3 52%, #b79784);
+  background-position: center;
+  background-size:
+    var(--garbage-cell-width) var(--garbage-cell-height),
+    var(--garbage-cell-width) 100%,
+    100% var(--garbage-cell-height),
+    100% 100%;
+  box-shadow:
+    inset 0 2px 0 rgba(255, 255, 255, 0.4),
+    inset 0 -2px 0 rgba(104, 72, 56, 0.16),
+    0 2px 0 #9f7f6d;
+  transform: scale(0.92);
 }
 
 .mini-garbage.metal {
-  background: #9fbcd1;
+  border-color: rgba(246, 252, 255, 0.92);
+  background:
+    radial-gradient(
+      circle,
+      #e8f2f7 0 15%,
+      rgba(66, 105, 130, 0.72) 16% 22%,
+      transparent 23%
+    ),
+    linear-gradient(
+      90deg,
+      transparent calc(100% - 1px),
+      rgba(65, 103, 128, 0.42) 0
+    ),
+    linear-gradient(
+      transparent calc(100% - 1px),
+      rgba(65, 103, 128, 0.42) 0
+    ),
+    repeating-linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.14) 0 3px,
+      transparent 3px 8px
+    ),
+    linear-gradient(#d9e8f1, #adc7d8 48%, #86a8bd);
+  background-size:
+    var(--garbage-cell-width) var(--garbage-cell-height),
+    var(--garbage-cell-width) 100%,
+    100% var(--garbage-cell-height),
+    auto,
+    100% 100%;
+  box-shadow:
+    inset 0 2px 0 rgba(255, 255, 255, 0.45),
+    inset 0 -2px 0 rgba(57, 92, 116, 0.18),
+    0 2px 0 #6689a1;
+}
+
+.mini-garbage.falling {
+  filter: drop-shadow(0 3px 2px rgba(110, 86, 72, 0.22));
+}
+
+.mini-garbage.converting {
+  border-color: rgba(63, 186, 135, 0.9);
+  box-shadow:
+    inset 0 -5px 0 rgba(95, 208, 160, 0.62),
+    0 0 0 1px rgba(95, 208, 160, 0.38),
+    0 2px 0 #3fba87;
 }
 
 .mini-waiting {

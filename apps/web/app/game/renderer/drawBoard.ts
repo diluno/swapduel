@@ -1,4 +1,5 @@
 import type {
+  GarbageBlock,
   PanelType,
   SimulationState,
 } from '@swapduel/game-engine'
@@ -15,6 +16,8 @@ const PANEL_COLORS: Record<
   crescent: { top: '#ffb59a', bottom: '#ed6a45' },
   shock: { top: '#fffaf5', bottom: '#ffd8b8' },
 }
+
+const COMBO_EFFECT_DURATION_MS = 1_100
 
 interface DrawBoardOptions {
   selected: { row: number; column: number } | null
@@ -163,6 +166,389 @@ function drawSymbol(
   context.restore()
 }
 
+function drawGarbageBlock(
+  context: CanvasRenderingContext2D,
+  block: GarbageBlock,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  cellSize: number,
+  reducedMotion: boolean,
+): void {
+  const isMetal = block.type === 'metal'
+  const inset = cellSize * 0.045
+  const depth = cellSize * 0.075
+  const bodyX = x + inset
+  const bodyY = y + inset
+  const bodyWidth = width - inset * 2
+  const bodyHeight = height - inset * 2 - depth
+  const radius = cellSize * 0.17
+
+  context.save()
+  context.shadowColor = isMetal
+    ? 'rgba(66, 112, 143, 0.28)'
+    : 'rgba(110, 74, 54, 0.24)'
+  context.shadowBlur =
+    block.state === 'falling' ? cellSize * 0.2 : cellSize * 0.09
+  context.shadowOffsetY =
+    block.state === 'falling' ? cellSize * 0.09 : cellSize * 0.045
+
+  roundedRect(
+    context,
+    bodyX,
+    bodyY + depth,
+    bodyWidth,
+    bodyHeight,
+    radius,
+  )
+  context.fillStyle = isMetal ? '#6689a1' : '#9f7f6d'
+  context.fill()
+
+  roundedRect(context, bodyX, bodyY, bodyWidth, bodyHeight, radius)
+  const surface = context.createLinearGradient(
+    bodyX,
+    bodyY,
+    bodyX,
+    bodyY + bodyHeight,
+  )
+  if (isMetal) {
+    surface.addColorStop(0, '#d9e8f1')
+    surface.addColorStop(0.46, '#adc7d8')
+    surface.addColorStop(1, '#86a8bd')
+  } else {
+    surface.addColorStop(0, '#ead8c8')
+    surface.addColorStop(0.5, '#cfb5a3')
+    surface.addColorStop(1, '#b79784')
+  }
+  context.fillStyle = surface
+  context.fill()
+  context.shadowColor = 'transparent'
+
+  context.save()
+  roundedRect(context, bodyX, bodyY, bodyWidth, bodyHeight, radius)
+  context.clip()
+
+  context.fillStyle = isMetal
+    ? 'rgba(255, 255, 255, 0.44)'
+    : 'rgba(255, 250, 245, 0.42)'
+  context.fillRect(
+    bodyX,
+    bodyY,
+    bodyWidth,
+    Math.max(2, cellSize * 0.095),
+  )
+  context.fillStyle = isMetal
+    ? 'rgba(57, 92, 116, 0.16)'
+    : 'rgba(104, 72, 56, 0.14)'
+  context.fillRect(
+    bodyX,
+    bodyY + bodyHeight - cellSize * 0.1,
+    bodyWidth,
+    cellSize * 0.1,
+  )
+
+  if (isMetal) {
+    context.strokeStyle = 'rgba(255, 255, 255, 0.18)'
+    context.lineWidth = Math.max(2, cellSize * 0.08)
+    for (
+      let stripe = -bodyHeight;
+      stripe < bodyWidth + bodyHeight;
+      stripe += cellSize * 0.42
+    ) {
+      context.beginPath()
+      context.moveTo(bodyX + stripe, bodyY + bodyHeight)
+      context.lineTo(bodyX + stripe + bodyHeight, bodyY)
+      context.stroke()
+    }
+  }
+  context.restore()
+
+  context.strokeStyle = isMetal
+    ? 'rgba(65, 103, 128, 0.42)'
+    : 'rgba(104, 72, 56, 0.3)'
+  context.lineWidth = Math.max(1, cellSize * 0.025)
+  for (let column = 1; column < block.width; column += 1) {
+    const seamX = x + column * cellSize
+    context.beginPath()
+    context.moveTo(seamX, bodyY + cellSize * 0.08)
+    context.lineTo(seamX, bodyY + bodyHeight - cellSize * 0.08)
+    context.stroke()
+  }
+  for (let row = 1; row < block.height; row += 1) {
+    const seamY = y + row * cellSize
+    context.beginPath()
+    context.moveTo(bodyX + cellSize * 0.08, seamY)
+    context.lineTo(bodyX + bodyWidth - cellSize * 0.08, seamY)
+    context.stroke()
+  }
+
+  for (let row = 0; row < block.height; row += 1) {
+    for (let column = 0; column < block.width; column += 1) {
+      const centerX = x + (column + 0.5) * cellSize
+      const centerY = y + (row + 0.5) * cellSize
+      if (isMetal) {
+        context.beginPath()
+        context.arc(
+          centerX,
+          centerY,
+          cellSize * 0.075,
+          0,
+          Math.PI * 2,
+        )
+        context.fillStyle = '#e8f2f7'
+        context.fill()
+        context.strokeStyle = 'rgba(66, 105, 130, 0.65)'
+        context.lineWidth = Math.max(1, cellSize * 0.025)
+        context.stroke()
+        context.beginPath()
+        context.moveTo(
+          centerX - cellSize * 0.035,
+          centerY + cellSize * 0.035,
+        )
+        context.lineTo(
+          centerX + cellSize * 0.035,
+          centerY - cellSize * 0.035,
+        )
+        context.stroke()
+      } else {
+        const markSize = cellSize * 0.11
+        context.beginPath()
+        context.moveTo(centerX, centerY - markSize)
+        context.lineTo(centerX + markSize, centerY)
+        context.lineTo(centerX, centerY + markSize)
+        context.lineTo(centerX - markSize, centerY)
+        context.closePath()
+        context.fillStyle = 'rgba(255, 246, 237, 0.64)'
+        context.fill()
+        context.strokeStyle = 'rgba(110, 78, 61, 0.28)'
+        context.lineWidth = Math.max(1, cellSize * 0.025)
+        context.stroke()
+      }
+    }
+  }
+
+  if (block.state === 'converting') {
+    const conversionY = y + (block.height - 1) * cellSize
+    const conversionGlow = context.createLinearGradient(
+      x,
+      conversionY,
+      x,
+      conversionY + cellSize,
+    )
+    conversionGlow.addColorStop(0, 'rgba(174, 247, 218, 0.34)')
+    conversionGlow.addColorStop(1, 'rgba(63, 186, 135, 0.58)')
+    context.fillStyle = conversionGlow
+    context.fillRect(
+      bodyX,
+      conversionY + inset,
+      bodyWidth,
+      cellSize - inset * 2,
+    )
+    context.strokeStyle = 'rgba(63, 186, 135, 0.82)'
+    context.lineWidth = Math.max(2, cellSize * 0.045)
+    context.strokeRect(
+      bodyX + cellSize * 0.025,
+      conversionY + inset + cellSize * 0.025,
+      bodyWidth - cellSize * 0.05,
+      cellSize - inset * 2 - cellSize * 0.05,
+    )
+  }
+
+  roundedRect(context, bodyX, bodyY, bodyWidth, bodyHeight, radius)
+  context.strokeStyle = isMetal
+    ? 'rgba(246, 252, 255, 0.9)'
+    : 'rgba(255, 248, 241, 0.82)'
+  context.lineWidth = Math.max(1.5, cellSize * 0.04)
+  context.stroke()
+
+  if (block.state === 'falling' && !reducedMotion) {
+    context.strokeStyle = isMetal
+      ? 'rgba(78, 120, 150, 0.32)'
+      : 'rgba(110, 86, 72, 0.28)'
+    context.lineWidth = Math.max(1.5, cellSize * 0.035)
+    context.lineCap = 'round'
+    for (const position of [0.25, 0.5, 0.75]) {
+      const motionX = bodyX + bodyWidth * position
+      context.beginPath()
+      context.moveTo(motionX, bodyY - cellSize * 0.16)
+      context.lineTo(motionX, bodyY - cellSize * 0.04)
+      context.stroke()
+    }
+  }
+  context.restore()
+}
+
+function drawComboEffect(
+  context: CanvasRenderingContext2D,
+  state: SimulationState,
+  cssWidth: number,
+  cssHeight: number,
+  cellSize: number,
+  reducedMotion: boolean,
+): void {
+  const clear = state.lastClearEvent
+  if (clear === null || clear.normalSize < 4) return
+
+  const age = state.elapsedMs - clear.occurredAt
+  if (age < 0 || age >= COMBO_EFFECT_DURATION_MS) return
+
+  const fade =
+    age < 760
+      ? 1
+      : Math.max(
+          0,
+          1 - (age - 760) / (COMBO_EFFECT_DURATION_MS - 760),
+        )
+  const burstProgress = Math.min(1, age / 720)
+  const enterProgress = Math.min(1, age / 220)
+  const overshoot = enterProgress - 1
+  const entranceScale = reducedMotion
+    ? 1
+    : 1 +
+      2.70158 * overshoot ** 3 +
+      1.70158 * overshoot ** 2
+  const sizeBoost = Math.min(0.12, (clear.normalSize - 4) * 0.018)
+  const scale = entranceScale * (1 + sizeBoost)
+  const centerX = cssWidth / 2
+  const centerY = Math.max(cellSize * 1.45, cssHeight * 0.28)
+  const palette =
+    clear.normalSize >= 8
+      ? { top: '#b79bf0', bottom: '#6b8fe8', shadow: '#7459ba' }
+      : clear.normalSize >= 6
+        ? { top: '#ff8f91', bottom: '#ed6a45', shadow: '#c6533a' }
+        : { top: '#ffd15c', bottom: '#ff914f', shadow: '#d87828' }
+
+  context.save()
+  context.globalAlpha = fade
+  context.translate(centerX, centerY)
+
+  if (!reducedMotion) {
+    const ringRadius = cellSize * (0.62 + burstProgress * 1.08)
+    context.beginPath()
+    context.arc(0, 0, ringRadius, 0, Math.PI * 2)
+    context.strokeStyle =
+      clear.normalSize >= 8
+        ? `rgba(183, 155, 240, ${0.5 * (1 - burstProgress)})`
+        : `rgba(255, 207, 92, ${0.58 * (1 - burstProgress)})`
+    context.lineWidth = Math.max(2, cellSize * 0.08)
+    context.stroke()
+
+    const particleCount = Math.min(14, clear.normalSize + 4)
+    const particleColors = [
+      '#ffcf5c',
+      '#ff8c66',
+      '#ff7c86',
+      '#5fd0a0',
+      '#6bb6f2',
+      '#b79bf0',
+    ]
+    for (let particle = 0; particle < particleCount; particle += 1) {
+      const angle =
+        -Math.PI / 2 + (particle / particleCount) * Math.PI * 2
+      const stagger = (particle % 3) * cellSize * 0.08
+      const distance =
+        cellSize * (0.54 + burstProgress * 1.16) + stagger
+      const particleX = Math.cos(angle) * distance
+      const particleY = Math.sin(angle) * distance
+      const particleSize =
+        cellSize * (0.075 - burstProgress * 0.025)
+
+      context.save()
+      context.globalAlpha =
+        fade * Math.max(0, 1 - burstProgress * 0.78)
+      context.translate(particleX, particleY)
+      context.rotate(angle + burstProgress * Math.PI)
+      context.fillStyle =
+        particleColors[particle % particleColors.length]!
+      if (particle % 2 === 0) {
+        context.fillRect(
+          -particleSize / 2,
+          -particleSize / 2,
+          particleSize,
+          particleSize,
+        )
+      } else {
+        context.beginPath()
+        context.arc(0, 0, particleSize / 2, 0, Math.PI * 2)
+        context.fill()
+      }
+      context.restore()
+    }
+  }
+
+  context.scale(scale, scale)
+  const badgeWidth = Math.min(
+    cssWidth * 0.68,
+    Math.max(142, cellSize * 3.65),
+  )
+  const badgeHeight = Math.max(42, cellSize * 0.72)
+  const badgeX = -badgeWidth / 2
+  const badgeY = -badgeHeight / 2
+  const badgeRadius = badgeHeight / 2
+
+  context.shadowColor = 'rgba(110, 70, 48, 0.26)'
+  context.shadowBlur = cellSize * 0.2
+  context.shadowOffsetY = cellSize * 0.1
+  roundedRect(
+    context,
+    badgeX,
+    badgeY + cellSize * 0.075,
+    badgeWidth,
+    badgeHeight,
+    badgeRadius,
+  )
+  context.fillStyle = palette.shadow
+  context.fill()
+
+  roundedRect(
+    context,
+    badgeX,
+    badgeY,
+    badgeWidth,
+    badgeHeight,
+    badgeRadius,
+  )
+  const badgeGradient = context.createLinearGradient(
+    0,
+    badgeY,
+    0,
+    badgeY + badgeHeight,
+  )
+  badgeGradient.addColorStop(0, palette.top)
+  badgeGradient.addColorStop(0.58, palette.top)
+  badgeGradient.addColorStop(1, palette.bottom)
+  context.fillStyle = badgeGradient
+  context.fill()
+  context.shadowColor = 'transparent'
+
+  roundedRect(
+    context,
+    badgeX + cellSize * 0.035,
+    badgeY + cellSize * 0.035,
+    badgeWidth - cellSize * 0.07,
+    badgeHeight - cellSize * 0.07,
+    badgeRadius,
+  )
+  context.strokeStyle = 'rgba(255, 255, 255, 0.72)'
+  context.lineWidth = Math.max(1.5, cellSize * 0.035)
+  context.stroke()
+
+  context.fillStyle = '#fff'
+  context.font = `700 ${Math.max(17, cellSize * 0.38)}px "Fredoka", system-ui`
+  context.textAlign = 'center'
+  context.textBaseline = 'middle'
+  context.shadowColor = 'rgba(110, 70, 48, 0.32)'
+  context.shadowBlur = 0
+  context.shadowOffsetY = Math.max(1, cellSize * 0.035)
+  context.fillText(
+    `${clear.normalSize} COMBO!`,
+    0,
+    cellSize * 0.015,
+  )
+  context.restore()
+}
+
 export function drawBoard(
   canvas: HTMLCanvasElement,
   state: SimulationState,
@@ -172,7 +558,7 @@ export function drawBoard(
   if (context === null) return
 
   const bounds = canvas.getBoundingClientRect()
-  const dpr = Math.min(window.devicePixelRatio || 1, 3)
+  const dpr = Math.min(window.devicePixelRatio || 1, 2)
   const width = Math.max(1, Math.round(bounds.width * dpr))
   const height = Math.max(1, Math.round(bounds.height * dpr))
 
@@ -216,62 +602,16 @@ export function drawBoard(
       (visualRow + block.height + state.riseOffset) * cellSize
     const width = block.width * cellSize
     const height = block.height * cellSize
-    const inset = cellSize * 0.045
-
-    context.save()
-    context.shadowColor =
-      block.type === 'metal'
-        ? 'rgba(107, 182, 242, 0.3)'
-        : 'rgba(110, 86, 72, 0.2)'
-    context.shadowBlur =
-      block.state === 'falling' ? cellSize * 0.18 : cellSize * 0.08
-    roundedRect(
+    drawGarbageBlock(
       context,
-      x + inset,
-      y + inset,
-      width - inset * 2,
-      height - inset * 2,
-      cellSize * 0.16,
+      block,
+      x,
+      y,
+      width,
+      height,
+      cellSize,
+      options.reducedMotion,
     )
-    context.fillStyle =
-      block.type === 'metal' ? '#9fbcd1' : '#c9b4a5'
-    context.fill()
-    context.strokeStyle =
-      block.type === 'metal'
-        ? 'rgba(255, 255, 255, 0.82)'
-        : 'rgba(255, 244, 232, 0.72)'
-    context.lineWidth = Math.max(1.5, cellSize * 0.04)
-    context.stroke()
-
-    context.strokeStyle =
-      block.type === 'metal'
-        ? 'rgba(78, 120, 150, 0.28)'
-        : 'rgba(110, 86, 72, 0.24)'
-    context.lineWidth = Math.max(1, cellSize * 0.025)
-    for (let column = 1; column < block.width; column += 1) {
-      context.beginPath()
-      context.moveTo(x + column * cellSize, y + inset)
-      context.lineTo(x + column * cellSize, y + height - inset)
-      context.stroke()
-    }
-    for (let row = 1; row < block.height; row += 1) {
-      context.beginPath()
-      context.moveTo(x + inset, y + row * cellSize)
-      context.lineTo(x + width - inset, y + row * cellSize)
-      context.stroke()
-    }
-
-    if (block.state === 'converting') {
-      const conversionY = y + (block.height - 1) * cellSize
-      context.fillStyle = 'rgba(95, 208, 160, 0.3)'
-      context.fillRect(
-        x + inset,
-        conversionY + inset,
-        width - inset * 2,
-        cellSize - inset * 2,
-      )
-    }
-    context.restore()
   }
 
   const incomingY = cssHeight - state.riseOffset * cellSize
@@ -372,6 +712,15 @@ export function drawBoard(
     )
     context.stroke()
   }
+
+  drawComboEffect(
+    context,
+    state,
+    cssWidth,
+    cssHeight,
+    cellSize,
+    options.reducedMotion,
+  )
 
   const riseY = cssHeight - state.riseOffset * cellSize
   context.save()

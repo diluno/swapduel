@@ -33,7 +33,11 @@ stop while Socket.IO continues buffering match events. Returning to the
 foreground recalibrates against the lowest-latency server-time sample and
 resets frame timing before play continues, preventing suspended time from being
 processed as a burst.
-Active simulations are also serialized to session storage every 500 ms and
+During live play, the deterministic engine continues using 60 Hz fixed steps
+while the battery-sensitive presentation path is capped at approximately 30
+canvas frames per second, 2× device pixel density, and 10 reactive UI updates
+per second.
+Active simulations are also serialized to session storage every two seconds and
 when the page is suspended. A quick reload can restore only a fresh, versioned
 snapshot for the exact match, round, and seed; malformed or stale state falls
 back to deterministic round creation.
