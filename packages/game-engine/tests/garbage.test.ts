@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   createSimulation,
   enqueueIncomingGarbage,
-  randomInteger,
+  findMatches,
   requestSwap,
   stepSimulation,
   type GarbageBlock,
@@ -277,29 +277,13 @@ describe('garbage conversion', () => {
     expect(converted.garbage).toEqual([])
   })
 
-  it('allows released conversion panels to continue the active chain', () => {
-    let initial: SimulationState | null = null
-
-    for (let index = 0; index < 2_000; index += 1) {
-      const candidate = createSimulation(`conversion-chain-${index}`)
-      let randomState = candidate.conversionRandomState
-      const panelTypes: number[] = []
-
-      for (let panelIndex = 0; panelIndex < 3; panelIndex += 1) {
-        const generated = randomInteger(randomState, 5)
-        randomState = generated.randomState
-        panelTypes.push(generated.value)
-      }
-
-      if (panelTypes.every((type) => type === panelTypes[0])) {
-        initial = candidate
-        break
-      }
-    }
-
-    expect(initial).not.toBeNull()
+  it('keeps converted panels part of the active chain', () => {
+    // The mechanism that lets a player-built chain carry on through a
+    // dissolving block: the spawned panels inherit the open chain, so a match
+    // they later fall into still counts as a continuation.
+    const initial = createSimulation('conversion-chain-flag')
     const state: SimulationState = {
-      ...initial!,
+      ...initial,
       board: boardWith([
         [0, 0, 'circle'],
         [0, 1, 'circle'],
@@ -307,21 +291,53 @@ describe('garbage conversion', () => {
       ]),
       garbage: [garbageBlock()],
     }
-    const chained = advanceUntil(
-      state,
-      (candidate) => candidate.lastClearEvent?.chainLevel === 2,
+    const converting = advanceUntil(state, (candidate) =>
+      candidate.board.cells
+        .flat()
+        .some((panel) => panel?.state === 'garbage-locked'),
     )
+    const spawned = converting.board.cells
+      .flat()
+      .filter((panel) => panel?.state === 'garbage-locked')
 
-    expect(chained.lastClearEvent).toMatchObject({
-      size: 3,
-      chainLevel: 2,
-      qualifiedForChain: true,
-    })
-    expect(chained.outgoingAttacks).toEqual([
-      expect.objectContaining({
-        kind: 'chain',
-        chainLevel: 2,
-      }),
-    ])
+    expect(spawned.length).toBeGreaterThan(0)
+    expect(spawned.every((panel) => panel!.chainEligible)).toBe(true)
+    expect(spawned.every((panel) => panel!.chainId !== null)).toBe(true)
+  })
+
+  it('never spawns a ready-made match when a block dissolves', () => {
+    // Spawned panels are garbage-locked, so they cannot match until they are
+    // released — at which point they all turn idle at once. Unlocking a copy
+    // asks the real question: would these colours match the moment they land?
+    for (let index = 0; index < 250; index += 1) {
+      const initial = createSimulation(`conversion-safe-${index}`)
+      const state: SimulationState = {
+        ...initial,
+        board: boardWith([
+          [0, 0, 'circle'],
+          [0, 1, 'circle'],
+          [0, 2, 'circle'],
+        ]),
+        garbage: [garbageBlock({ width: 6 })],
+      }
+      const converted = advanceUntil(
+        state,
+        (candidate) =>
+          candidate.garbageConversion !== null &&
+          candidate.garbageConversion.nextColumn >= 6,
+      )
+      const unlocked = {
+        ...converted.board,
+        cells: converted.board.cells.map((row) =>
+          row.map((panel) =>
+            panel === null
+              ? null
+              : { ...panel, state: 'idle' as const },
+          ),
+        ),
+      }
+
+      expect(findMatches(unlocked)).toEqual([])
+    }
   })
 })

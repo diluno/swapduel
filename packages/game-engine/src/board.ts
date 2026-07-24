@@ -29,7 +29,11 @@ function createPanel(
   }
 }
 
-function availableTypes(
+// Types that can be placed at (row, column) without immediately completing a
+// three-in-a-row. Shared by every path that spawns panels — the starting
+// board, the incoming row, and garbage conversion — so none of them hands the
+// player a match they did not make.
+export function availableTypes(
   cells: Board['cells'],
   row: number,
   column: number,

@@ -3,7 +3,11 @@ import {
   comboAttackBlocks,
   shockAttackBlocks,
 } from './attacks'
-import { createInitialBoard, insertIncomingRow } from './board'
+import {
+  availableTypes,
+  createInitialBoard,
+  insertIncomingRow,
+} from './board'
 import { defaultGameConfig } from './config'
 import { advanceDangerState } from './danger'
 import {
@@ -368,12 +372,24 @@ function advanceGarbageConversion(
 
   const conversionRow = block.conversionRow ?? block.row
   const column = block.column + conversion.nextColumn
-  const randomPanel = randomInteger(
-    state.conversionRandomState,
+  const cells = cloneCells(state.board)
+  // Spawn a colour that does not itself complete a three-in-a-row, the same
+  // rule the starting board and incoming rows already follow. Chains the
+  // player set up still continue: those come from panels falling into place
+  // once the block is gone, not from spawned colours lining up by chance.
+  const palette = NORMAL_PANEL_TYPES.slice(
+    0,
     config.board.normalPanelTypes,
   )
-  const type = NORMAL_PANEL_TYPES[randomPanel.value]!
-  const cells = cloneCells(state.board)
+  const candidates = availableTypes(cells, conversionRow, column, palette)
+  // Only two colours can ever be excluded, so this cannot empty; fall back to
+  // the full palette rather than risk an out-of-range pick.
+  const safeTypes = candidates.length > 0 ? candidates : palette
+  const randomPanel = randomInteger(
+    state.conversionRandomState,
+    safeTypes.length,
+  )
+  const type = safeTypes[randomPanel.value]!
   const convertedPanelIds = [...conversion.convertedPanelIds]
   let nextPanelId = state.board.nextPanelId
 
