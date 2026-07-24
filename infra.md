@@ -34,9 +34,9 @@ separate frontend host and no database.
 
 ## Deploys
 
-> **Auto-deploy is NOT working. Pushes to `main` do not deploy.**
-> Every release currently requires a manual `railway up`. See
-> "Auto-deploy is broken" below for the cause and the fix.
+**Auto-deploy on push to `main`.** Deployment trigger
+`c789311b-f257-4640-a332-391f12e09ce3` → `diluno/swapduel`, branch `main`,
+provider `github`, on the `swapduel` service in `production`.
 
 Deploy is the Dockerfile: copy → `pnpm install --frozen-lockfile` →
 `NODE_ENV=production` → `pnpm build` → run the server.
@@ -55,39 +55,30 @@ Manual deploy of the working directory (bypasses git entirely):
 Note the CLI installs to `~/.railway/bin`, which is **not** on the default
 PATH — use the full path or add it to `~/.zshrc`.
 
-### Auto-deploy is broken — cause and fix
+### If pushes stop deploying, check this first
 
-**The Railway GitHub App has no access to `diluno/swapduel`.** Attempting to
-create the deployment trigger returns:
+`project.deploymentTriggers` is the **only** reliable signal. The service
+reporting `source: {"repo": "diluno/swapduel"}` does **not** mean
+auto-deploy works: `railway service source connect` sets that field even
+when the Railway GitHub App has no access to the repo, succeeding silently
+while creating no trigger. That exact state broke deploys for several hours
+on 2026-07-24 — `source.repo` looked correct, the trigger list was empty,
+and pushes did nothing with no error anywhere. Creating the trigger while
+the App lacked access failed with:
 
     Cannot create deployment trigger for diluno/swapduel
     because no one in the project has access to it
 
-Consequently `project.deploymentTriggers` is **empty**, and pushes to `main`
-produce no deployment. Confirmed by pushing `4edff29` and seeing no build
-after 6 minutes.
-
-Misleading detail: the service *does* report
-`source: {"repo": "diluno/swapduel"}`. `railway service source connect`
-sets that field even when the App lacks repo access, so **`source.repo`
-alone does not mean auto-deploy works.** The authoritative check is whether
-a trigger exists:
+The fix was granting the Railway GitHub App access to the repo in the
+dashboard (browser OAuth — not possible from the CLI). Verify the trigger:
 
     TOKEN=$(jq -r '.user.accessToken' ~/.railway/config.json)
     curl -s https://backboard.railway.com/graphql/v2 \
       -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
       -d '{"query":"query($id:String!){project(id:$id){deploymentTriggers{edges{node{id repository branch}}}}}","variables":{"id":"10183411-df26-4259-9b3e-7092b36067be"}}'
 
-**To fix:** in the Railway dashboard, connect GitHub and grant the Railway
-GitHub App access to `diluno/swapduel` (browser OAuth — cannot be done from
-the CLI). Then re-run `railway service source connect` and verify a trigger
-now exists.
-
-### History
-
-Two one-off `railway up` uploads at 18:17–18:18 on 2026-07-24, then a build
-at 20:35 triggered by the `service source connect` call itself — not by a
-push. No push has ever deployed this project.
+An empty `edges` array means auto-deploy is dead regardless of what the
+service source says.
 
 Local production check:
 
@@ -169,7 +160,7 @@ Still unconfirmed:
 - **Region and replica count.** The single-instance caveat above is a
   property of the code (in-memory state), not something verified against
   the service config — worth checking before anyone scales it up.
-- **Branch binding.** `--branch main` was passed when connecting the source,
-  but the service instance reports `branch: null`. Moot until the GitHub App
-  has repo access and a trigger actually exists; recheck then.
+- **Branch binding.** The service instance reports `branch: null` even though
+  the deployment trigger is correctly bound to `main`. Cosmetic as far as
+  observed; the trigger is what governs.
 - **DNS registrar** for `dil.uno`.
