@@ -1,0 +1,9 @@
+packages:
+  - apps/*
+  - packages/*
+
+confirmModulesPurge: false
+strictDepBuilds: false
+
+allowBuilds:
+  esbuild: true

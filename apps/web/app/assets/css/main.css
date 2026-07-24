@@ -1,0 +1,59 @@
+@import url("https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&family=Nunito:wght@400;600;700;800;900&display=swap");
+
+:root {
+  color-scheme: light;
+  font-family: "Nunito", system-ui, sans-serif;
+  background: #fff4e8;
+  color: #6e5648;
+  font-synthesis: none;
+  --cream: #fff4e8;
+  --cream-soft: #ffead6;
+  --peach: #ffd8b8;
+  --peach-deep: #f6c29a;
+  --coral: #ff8c66;
+  --coral-deep: #ed6a45;
+  --coral-soft: #ffb59a;
+  --ink: #6e5648;
+  --ink-soft: #a38b7c;
+  --ink-faint: #c9b4a5;
+  --warm-shadow: rgba(120, 80, 50, 0.1);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#__nuxt {
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  min-width: 320px;
+  background:
+    radial-gradient(circle at 50% -8rem, rgba(255, 255, 255, 0.94) 0, transparent 34rem),
+    linear-gradient(180deg, #fff7ee 0%, var(--cream-soft) 100%);
+  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+button {
+  min-height: 44px;
+}
+
+a {
+  color: inherit;
+}
+
+::selection {
+  background: var(--coral-soft);
+  color: var(--ink);
+}

@@ -1,0 +1,21 @@
+{
+  "name": "swapduel",
+  "private": true,
+  "packageManager": "pnpm@11.17.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @swapduel/web dev",
+    "dev:server": "pnpm --filter @swapduel/server dev",
+    "test": "pnpm --filter @swapduel/game-engine test",
+    "test:watch": "pnpm --filter @swapduel/game-engine test:watch",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.54.1",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  }
+}

@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Peachy Pop — Style Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&family=Nunito:wght@400;600;700;800;900&display=swap" rel="stylesheet" />
+<style>
+:root{
+--cream:#FFF4E8;--cream-soft:#FFEAD6;--peach:#FFD8B8;--peach-deep:#F6C29A;
+--coral:#FF8C66;--coral-deep:#ED6A45;--coral-soft:#FFB59A;
+--ink:#6E5648;--ink-soft:#A38B7C;--ink-faint:#C9B4A5;
+--p-red:#FF7C86;--p-red-d:#F0606C;--p-green:#5FD0A0;--p-green-d:#3FBA87;
+--p-blue:#6BB6F2;--p-blue-d:#4C9EE3;--p-yellow:#FFCF5C;--p-yellow-d:#F4B637;
+--p-purple:#B79BF0;--p-purple-d:#9E7FE6;
+}
+*{box-sizing:border-box}
+body{margin:0;background:linear-gradient(180deg,#FFF7EE,#FFEAD6);font-family:'Nunito',system-ui,sans-serif;color:var(--ink);-webkit-font-smoothing:antialiased}
+a{color:var(--coral-deep)}a:hover{color:#c94f2c}
+.wrap{max-width:880px;margin:0 auto;padding:56px 28px 90px}
+.fredoka{font-family:'Fredoka',sans-serif}
+h1{font-family:'Fredoka';font-size:44px;font-weight:700;color:#FF7E54;margin:4px 0 0;letter-spacing:-0.5px}
+.kicker{font-size:12px;font-weight:800;letter-spacing:3px;text-transform:uppercase;color:#C99B82}
+h2{font-family:'Fredoka';font-size:22px;font-weight:600;color:var(--ink);margin:0 0 4px}
+.sec{background:#fff;border-radius:24px;padding:28px 30px;margin-top:28px;box-shadow:0 10px 30px rgba(120,80,50,0.10)}
+.sub{font-size:13.5px;font-weight:600;color:var(--ink-soft);margin:0 0 20px;line-height:1.6}
+.row{display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start}
+.sw{display:flex;flex-direction:column;align-items:center;gap:8px;width:88px}
+.chip{width:64px;height:64px;border-radius:18px;box-shadow:inset 0 3px 0 rgba(255,255,255,0.45),inset 0 -4px 0 rgba(0,0,0,0.08),0 3px 8px rgba(110,86,72,0.15)}
+.sw b{font-size:12.5px;font-weight:800}
+.sw code{font-size:11px;color:var(--ink-soft);background:var(--cream);padding:2px 7px;border-radius:8px}
+.spec{font-size:13px;line-height:1.75;color:#7A6557;font-weight:600}
+.spec code{background:var(--cream);padding:1px 7px;border-radius:8px;font-size:12px;color:#B0653F}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:24px}
+@media(max-width:640px){.grid2{grid-template-columns:1fr}}
+.demo{background:var(--cream);border-radius:16px;padding:22px;display:flex;align-items:center;justify-content:center;gap:14px;flex-wrap:wrap}
+.btn{border:none;cursor:pointer;border-radius:32px;color:#fff;font-family:'Fredoka';font-weight:600;display:inline-flex;align-items:center;justify-content:center;gap:8px}
+.btn-primary{height:60px;padding:0 40px;font-size:23px;background:linear-gradient(180deg,#FF9A6E 0%,#FF7E54 60%,#F26A40 100%);box-shadow:inset 0 3px 0 rgba(255,255,255,0.5),inset 0 -4px 0 rgba(0,0,0,0.12),0 6px 0 #D95832,0 12px 18px rgba(217,88,50,0.35)}
+.btn-round{width:46px;height:46px;border-radius:23px;background:rgba(255,255,255,0.75);box-shadow:0 3px 8px rgba(196,120,80,0.18),inset 0 1px 0 rgba(255,255,255,0.9)}
+.pill{display:inline-flex;align-items:center;gap:8px;padding:10px 20px;border-radius:30px;background:rgba(255,255,255,0.85);box-shadow:0 3px 10px rgba(190,120,80,0.14),inset 0 1px 0 rgba(255,255,255,0.9);font-weight:800;font-size:13.5px;color:#BC8E72}
+.panel{position:relative;border-radius:15px;display:flex;align-items:center;justify-content:center}
+table{border-collapse:collapse;width:100%;font-size:13px;font-weight:600;color:#7A6557}
+td{padding:7px 10px;border-bottom:1px solid #F5EBE2;vertical-align:top}
+td:first-child{font-weight:800;color:var(--ink);white-space:nowrap;width:150px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div class="kicker">Style guide · v1</div>
+<h1>Peachy Pop</h1>
+<p class="sub" style="max-width:560px;margin-top:10px">Cozy, warm, candy-soft. Everything is rounded, everything has a glossy top and a soft bottom shadow — like pressable sweets. Never pure black, never pure gray.</p>
+
+<div class="sec">
+<h2>Color</h2>
+<p class="sub">Warm surfaces, one coral accent, five panel colors. Ink is a warm brown — use it everywhere you'd reach for black.</p>
+<div class="kicker" style="margin-bottom:12px">Surfaces &amp; ink</div>
+<div class="row" style="margin-bottom:24px">
+<div class="sw"><div class="chip" style="background:#FFF4E8"></div><b>Cream</b><code>#FFF4E8</code></div>
+<div class="sw"><div class="chip" style="background:#FFEAD6"></div><b>Cream Soft</b><code>#FFEAD6</code></div>
+<div class="sw"><div class="chip" style="background:#FFD8B8"></div><b>Peach</b><code>#FFD8B8</code></div>
+<div class="sw"><div class="chip" style="background:#FF8C66"></div><b>Coral</b><code>#FF8C66</code></div>
+<div class="sw"><div class="chip" style="background:#ED6A45"></div><b>Coral Deep</b><code>#ED6A45</code></div>
+<div class="sw"><div class="chip" style="background:#6E5648"></div><b>Ink</b><code>#6E5648</code></div>
+<div class="sw"><div class="chip" style="background:#A38B7C"></div><b>Ink Soft</b><code>#A38B7C</code></div>
+</div>
+<div class="kicker" style="margin-bottom:12px">Panel colors (top → bottom-edge pair)</div>
+<div class="row">
+<div class="sw"><div class="chip" style="background:linear-gradient(180deg,#FF7C86 55%,#F0606C)"></div><b>Berry</b><code>#FF7C86</code></div>
+<div class="sw"><div class="chip" style="background:linear-gradient(180deg,#5FD0A0 55%,#3FBA87)"></div><b>Mint</b><code>#5FD0A0</code></div>
+<div class="sw"><div class="chip" style="background:linear-gradient(180deg,#6BB6F2 55%,#4C9EE3)"></div><b>Sky</b><code>#6BB6F2</code></div>
+<div class="sw"><div class="chip" style="background:linear-gradient(180deg,#FFCF5C 55%,#F4B637)"></div><b>Honey</b><code>#FFCF5C</code></div>
+<div class="sw"><div class="chip" style="background:linear-gradient(180deg,#B79BF0 55%,#9E7FE6)"></div><b>Plum</b><code>#B79BF0</code></div>
+</div>
+</div>
+
+<div class="sec">
+<h2>Type</h2>
+<p class="sub"><b>Fredoka</b> for anything loud (logo, scores, buttons, headings) · <b>Nunito</b> for everything else (labels, body, hints).</p>
+<div style="display:flex;flex-direction:column;gap:14px">
+<div class="fredoka" style="font-size:56px;font-weight:700;color:#FF8254;text-shadow:0 3px 0 #fff,0 4px 0 #E9C9B2,0 8px 12px rgba(196,120,80,0.25);line-height:1">Logo / Fredoka 700</div>
+<div class="fredoka" style="font-size:30px;font-weight:600;color:#FF7E54">Score &amp; headings / Fredoka 600</div>
+<div style="font-size:12px;font-weight:800;letter-spacing:2.5px;text-transform:uppercase;color:#C99B82">Section label / Nunito 800 · tracked caps</div>
+<div style="font-size:15px;font-weight:600;color:#7A6557">Body copy / Nunito 600 — warm brown, never black. Line-height 1.6.</div>
+<div style="font-size:14px;font-weight:800;color:#BC8E72">Hint text / Nunito 800 in muted caramel</div>
+</div>
+</div>
+
+<div class="sec">
+<h2>Panels</h2>
+<p class="sub">The core unit. Radius = 30% of size. Gradient top→bottom of the color pair, glossy highlight strip, hard bottom edge in the dark shade, and a white ~42% glyph per color for color-blind readability.</p>
+<div class="demo" style="margin-bottom:16px">
+<div class="panel" style="width:52px;height:52px;background:linear-gradient(180deg,#FF7C86 55%,#F0606C);box-shadow:inset 0 4px 0 rgba(255,255,255,0.55),inset 0 -5px 0 rgba(0,0,0,0.10),0 3px 0 #F0606C,0 4px 6px rgba(110,86,72,0.18)"><svg width="22" height="22" viewBox="0 0 24 24"><path d="M12 21s-7.5-4.7-7.5-10A4.5 4.5 0 0 1 12 8a4.5 4.5 0 0 1 7.5 3c0 5.3-7.5 10-7.5 10Z" fill="rgba(255,255,255,0.92)"></path></svg></div>
+<div class="panel" style="width:52px;height:52px;background:linear-gradient(180deg,#5FD0A0 55%,#3FBA87);box-shadow:inset 0 4px 0 rgba(255,255,255,0.55),inset 0 -5px 0 rgba(0,0,0,0.10),0 3px 0 #3FBA87,0 4px 6px rgba(110,86,72,0.18)"><svg width="22" height="22" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7.5" stroke="rgba(255,255,255,0.92)" stroke-width="3.4" fill="none"></circle></svg></div>
+<div class="panel" style="width:52px;height:52px;background:linear-gradient(180deg,#6BB6F2 55%,#4C9EE3);box-shadow:inset 0 4px 0 rgba(255,255,255,0.55),inset 0 -5px 0 rgba(0,0,0,0.10),0 3px 0 #4C9EE3,0 4px 6px rgba(110,86,72,0.18)"><svg width="22" height="22" viewBox="0 0 24 24"><rect x="12" y="2.5" width="13.4" height="13.4" rx="2.2" transform="rotate(45 12 2.5)" fill="rgba(255,255,255,0.92)"></rect></svg></div>
+<div class="panel" style="width:52px;height:52px;background:linear-gradient(180deg,#FFCF5C 55%,#F4B637);box-shadow:inset 0 4px 0 rgba(255,255,255,0.55),inset 0 -5px 0 rgba(0,0,0,0.10),0 3px 0 #F4B637,0 4px 6px rgba(110,86,72,0.18)"><svg width="22" height="22" viewBox="0 0 24 24"><path d="M12 3.2l2.5 5.2 5.7.8-4.1 4 1 5.6L12 21.2 6.9 18.8l1-5.6-4.1-4 5.7-.8L12 3.2Z" fill="rgba(255,255,255,0.92)"></path></svg></div>
+<div class="panel" style="width:52px;height:52px;background:linear-gradient(180deg,#B79BF0 55%,#9E7FE6);box-shadow:inset 0 4px 0 rgba(255,255,255,0.55),inset 0 -5px 0 rgba(0,0,0,0.10),0 3px 0 #9E7FE6,0 4px 6px rgba(110,86,72,0.18)"><svg width="22" height="22" viewBox="0 0 24 24"><path d="M12 4.5l8 14H4l8-14Z" fill="rgba(255,255,255,0.92)"></path></svg></div>
+<div class="panel" style="width:52px;height:52px;background:#fff;box-shadow:0 0 0 2px #fff,0 0 26px #FF7C86"></div>
+<div class="panel" style="width:52px;height:52px;background:linear-gradient(180deg,#FF7C86 55%,#F0606C);opacity:0.45;filter:saturate(0.7)"><svg width="22" height="22" viewBox="0 0 24 24"><path d="M12 21s-7.5-4.7-7.5-10A4.5 4.5 0 0 1 12 8a4.5 4.5 0 0 1 7.5 3c0 5.3-7.5 10-7.5 10Z" fill="rgba(255,255,255,0.92)"></path></svg></div>
+</div>
+<table>
+<tr><td>Berry → heart</td><td>Mint → ring · Sky → diamond · Honey → star · Plum → triangle</td></tr>
+<tr><td>Popping state</td><td>fill flips to white + colored outer glow, glyph hidden</td></tr>
+<tr><td>Rising row</td><td>45% opacity + <code>saturate(0.7)</code> until it locks in</td></tr>
+<tr><td>Grid</td><td>48px cells, 6px gap on the main board · mini board 12px/2px</td></tr>
+</table>
+</div>
+
+<div class="sec">
+<h2>Buttons &amp; chrome</h2>
+<p class="sub">Candy buttons: gradient fill, glossy inset top, dark hard bottom edge (the "pressable" look). Chrome buttons are translucent white circles.</p>
+<div class="demo">
+<button class="btn btn-primary"><svg width="18" height="20" viewBox="0 0 22 24"><path d="M3 3.2c0-1.4 1.5-2.2 2.7-1.5l13.6 8.3c1.1.7 1.1 2.3 0 3L5.7 21.3C4.5 22 3 21.2 3 19.8V3.2Z" fill="#fff"></path></svg>Play</button>
+<button class="btn btn-round"><svg width="14" height="16" viewBox="0 0 16 18"><rect x="1" width="5" height="18" rx="2.2" fill="#C98A66"></rect><rect x="10" width="5" height="18" rx="2.2" fill="#C98A66"></rect></svg></button>
+<span class="pill">Hint pill · caramel text</span>
+<span class="fredoka" style="padding:7px 16px 8px;border-radius:20px;background:linear-gradient(180deg,#FFD15C,#FF9A4E);box-shadow:inset 0 2px 0 rgba(255,255,255,0.5),0 5px 12px rgba(217,120,40,0.35);font-weight:700;font-size:19px;color:#fff;text-shadow:0 2px 0 rgba(196,90,30,0.4)">×4 CHAIN!</span>
+</div>
+</div>
+
+<div class="grid2">
+<div class="sec" style="margin-top:28px">
+<h2>Radii &amp; shadow recipe</h2>
+<div class="spec">
+Panels <code>30% of size</code> · cards <code>20px</code> · board frame <code>30px</code> · buttons/pills <code>full round</code><br><br>
+Every raised element =<br>
+<code>inset 0 2-3px 0 rgba(255,255,255,.5)</code> gloss<br>
+<code>inset 0 -4px 0 rgba(0,0,0,.1)</code> underside<br>
+<code>0 Npx 0 [darker shade]</code> hard edge<br>
+<code>0 N·2px N·3px rgba(110,86,72,.18)</code> warm drop shadow — shadows are always <b>warm brown</b>, never black.
+</div>
+</div>
+<div class="sec" style="margin-top:28px">
+<h2>Rules of thumb</h2>
+<div class="spec">
+· Backgrounds: cream→peach vertical gradients, radial white glow at top<br>
+· Max 1 coral accent element per view (Play button / score)<br>
+· Decorate with tilted panels (±8–16°) and 4-point sparkles, sparingly<br>
+· Text on white/cream: Ink <code>#6E5648</code>; labels caramel <code>#C99B82</code><br>
+· Danger = dashed <code>rgba(240,96,108,.35)</code> line, never solid red<br>
+· No pure black, no pure gray, no sharp corners
+</div>
+</div>
+</div>
+</div>
+</body>
+</html>
