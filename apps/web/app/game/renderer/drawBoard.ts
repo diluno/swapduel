@@ -822,6 +822,60 @@ function drawTelegraphQueue(
   }
 }
 
+// Stop time is what makes the stack freeze after a combo, and until now it was
+// invisible. The gauge shares the top HUD band with the telegraph queue, where
+// it never covers the stack it is holding down.
+function drawStopMeter(
+  context: CanvasRenderingContext2D,
+  state: SimulationState,
+  cssWidth: number,
+  cellSize: number,
+  reducedMotion: boolean,
+): void {
+  if (state.stopTimeRemainingMs <= 0 || state.status !== 'playing') return
+
+  // Length reads as absolute stop time, so a monster chain visibly buys more
+  // than a four-panel combo instead of every stop looking the same.
+  const fraction = Math.min(
+    1,
+    state.stopTimeRemainingMs / defaultGameConfig.timing.maximumStopTimeMs,
+  )
+  const inset = cellSize * 0.1
+  const barHeight = Math.max(5, cellSize * 0.17)
+  const top = cellSize * 0.52
+  const labelWidth = Math.max(26, cellSize * 0.6)
+  const barX = inset + labelWidth
+  const trackWidth = cssWidth - inset - barX
+  const radius = barHeight / 2
+  const expiring = state.stopTimeRemainingMs < 600
+  const flash =
+    expiring && !reducedMotion
+      ? 0.45 + 0.55 * ((1 + Math.sin(state.elapsedMs / 55)) / 2)
+      : 1
+
+  context.save()
+  context.globalAlpha = flash
+
+  context.font = `800 ${Math.max(9, cellSize * 0.16)}px "Nunito", system-ui`
+  context.textAlign = 'left'
+  context.textBaseline = 'middle'
+  context.fillStyle = '#d95832'
+  context.fillText('STOP', inset, top + barHeight / 2)
+
+  roundedRect(context, barX, top, trackWidth, barHeight, radius)
+  context.fillStyle = 'rgba(110, 86, 72, 0.16)'
+  context.fill()
+
+  const fillWidth = Math.max(barHeight, trackWidth * fraction)
+  roundedRect(context, barX, top, fillWidth, barHeight, radius)
+  const fill = context.createLinearGradient(0, top, 0, top + barHeight)
+  fill.addColorStop(0, expiring ? '#ff9a6e' : '#ffd15c')
+  fill.addColorStop(1, expiring ? '#ed6a45' : '#ff914f')
+  context.fillStyle = fill
+  context.fill()
+  context.restore()
+}
+
 export function drawBoard(
   canvas: HTMLCanvasElement,
   state: SimulationState,
@@ -1142,6 +1196,14 @@ export function drawBoard(
   )
 
   drawTelegraphQueue(
+    context,
+    state,
+    cssWidth,
+    cellSize,
+    options.reducedMotion,
+  )
+
+  drawStopMeter(
     context,
     state,
     cssWidth,

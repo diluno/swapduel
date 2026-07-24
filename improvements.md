@@ -32,12 +32,12 @@ in danger. SNES rewards raising. At minimum:
 - Don't wipe stop time on raise; allow raising during stop (consume it faster).
 - Consider a small attack or tempo bonus for aggressive raising.
 
-### 2.3 Shape-aware combo garbage
+### 2.3 Shape-aware combo garbage — ✅ done
 The combo table is flat 1-high by count (`config.ts:38-96`). SNES sends e.g.
 +4 as 3-wide, +5 as 4-wide, +6 as full-width, and >6 as multiple staggered
 blocks. Bigger combos become visibly scarier on the opponent's board.
 
-### 2.4 Visible stop-time indicator
+### 2.4 Visible stop-time indicator — ✅ done
 Stop time accumulates but is never shown. Add a draining bar or flashing
 "STOP" timer near the rise meter so players can tell why the stack paused.
 
