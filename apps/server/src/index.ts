@@ -7,6 +7,8 @@ import {
   attackAckSchema,
   attackEventSchema,
   boardSnapshotSchema,
+  leaderboardSubmissionSchema,
+  LEADERBOARD_PAGE_SIZE,
   matchStartPayloadSchema,
   matchRematchPayloadSchema,
   nextRoundReadyPayloadSchema,
@@ -18,6 +20,7 @@ import {
   roomJoinPayloadSchema,
   roomReconnectPayloadSchema,
   simulationChecksumReportSchema,
+  type LeaderboardPage,
   type RoomError,
   type RoomSession,
   type RoomState,
@@ -30,6 +33,7 @@ import {
 import cors from 'cors'
 import express from 'express'
 import { Server, type Socket } from 'socket.io'
+import { LeaderboardStore } from './leaderboard/leaderboard-store'
 import {
   RoomStore,
   RoomStoreError,
@@ -44,6 +48,12 @@ const trustProxy =
   process.env.TRUST_PROXY === undefined
     ? process.env.NODE_ENV === 'production'
     : process.env.TRUST_PROXY === 'true'
+const leaderboardDatabasePath =
+  process.env.LEADERBOARD_DB_PATH ??
+  resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    '../../../data/leaderboard.db',
+  )
 const webPublicDirectory =
   process.env.WEB_PUBLIC_DIR ??
   resolve(
@@ -59,6 +69,91 @@ app.use(express.json({ limit: '32kb' }))
 
 app.get('/health', (_request, response) => {
   response.json({ service: 'swapduel', status: 'ok' })
+})
+
+// The leaderboard is the only durable state in the service. A missing or
+// unwritable volume must not take the game down with it: the endpoints report
+// 503 and everything else — rooms, matches, solo play — carries on.
+let leaderboard: LeaderboardStore | null = null
+try {
+  leaderboard = new LeaderboardStore({ databasePath: leaderboardDatabasePath })
+} catch (error) {
+  console.error(
+    `Leaderboard storage at ${leaderboardDatabasePath} is unavailable; time-trial scores will not be recorded.`,
+    error,
+  )
+}
+
+const leaderboardReadLimiter = new FixedWindowRateLimiter({
+  limit: 60,
+  windowMs: 60_000,
+  maxKeys: 5_000,
+})
+const leaderboardWriteLimiter = new FixedWindowRateLimiter({
+  limit: 10,
+  windowMs: 60_000,
+  maxKeys: 5_000,
+})
+
+function rejectHttpIfLimited(
+  limiter: FixedWindowRateLimiter,
+  request: express.Request,
+  response: express.Response,
+): boolean {
+  const result = limiter.consume(request.ip ?? 'unknown')
+  if (result.allowed) return false
+
+  response
+    .status(429)
+    .set('Retry-After', String(Math.ceil(result.retryAfterMs / 1000)))
+    .json(rateLimitError(result.retryAfterMs))
+  return true
+}
+
+function requireLeaderboard(
+  response: express.Response,
+): LeaderboardStore | null {
+  if (leaderboard !== null) return leaderboard
+
+  response.status(503).json({
+    code: 'INVALID_REQUEST',
+    message: 'The leaderboard is temporarily unavailable.',
+  } satisfies RoomError)
+  return null
+}
+
+app.get('/api/leaderboard', (request, response) => {
+  if (rejectHttpIfLimited(leaderboardReadLimiter, request, response)) return
+  const store = requireLeaderboard(response)
+  if (store === null) return
+
+  const requestedLimit = Number.parseInt(
+    typeof request.query.limit === 'string' ? request.query.limit : '',
+    10,
+  )
+  const entries = store.top(
+    Number.isFinite(requestedLimit) && requestedLimit > 0
+      ? requestedLimit
+      : LEADERBOARD_PAGE_SIZE,
+  )
+  response.json({ entries } satisfies LeaderboardPage)
+})
+
+app.post('/api/leaderboard', (request, response) => {
+  if (rejectHttpIfLimited(leaderboardWriteLimiter, request, response)) return
+  const store = requireLeaderboard(response)
+  if (store === null) return
+
+  const parsed = leaderboardSubmissionSchema.safeParse(request.body)
+  if (!parsed.success) {
+    response.status(400).json({
+      code: 'INVALID_REQUEST',
+      message: 'The score submission was invalid.',
+    } satisfies RoomError)
+    return
+  }
+
+  response.status(201).json(store.submit(parsed.data))
 })
 
 if (existsSync(webPublicDirectory)) {
@@ -256,6 +351,8 @@ const roomCleanupInterval = setInterval(() => {
   snapshotLimiter.prune()
   pingLimiter.prune()
   malformedEventLimiter.prune()
+  leaderboardReadLimiter.prune()
+  leaderboardWriteLimiter.prune()
   for (const roomState of cleanup.updatedRooms) {
     io.to(roomState.roomId).emit('room:state', roomState)
   }
@@ -1022,6 +1119,7 @@ function shutDown(signal: NodeJS.Signals): void {
   forcedExit.unref()
 
   io.close(() => {
+    leaderboard?.close()
     clearTimeout(forcedExit)
     process.exit(0)
   })

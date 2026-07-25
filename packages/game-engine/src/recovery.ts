@@ -280,6 +280,11 @@ export function isSimulationState(
     typeof value.manualRaise === 'boolean' &&
     typeof value.status === 'string' &&
     statuses.has(value.status) &&
+    (value.timeLimitMs === null ||
+      (isFiniteNumber(value.timeLimitMs) && value.timeLimitMs > 0)) &&
+    (value.endReason === null ||
+      value.endReason === 'topped-out' ||
+      value.endReason === 'time-up') &&
     typeof value.phase === 'string' &&
     phases.has(value.phase) &&
     isFiniteNumber(value.phaseStartedAt) &&

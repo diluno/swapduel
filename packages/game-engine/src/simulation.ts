@@ -980,6 +980,24 @@ function advanceRise(
   }
 }
 
+/**
+ * Ends a timed run the moment its clock runs out. The cut is deliberately hard:
+ * a clear still flashing when the timer expires does not get to pay out, so two
+ * players who made the same swaps at the same times always finish on the same
+ * score. `elapsedMs` is pinned to the limit so the readout lands on 0:00 exactly
+ * rather than a step past it.
+ */
+function endTimedRun(state: SimulationState): SimulationState {
+  return {
+    ...state,
+    elapsedMs: state.timeLimitMs ?? state.elapsedMs,
+    status: 'lost',
+    endReason: 'time-up',
+    manualRaise: false,
+    riseSpeed: 0,
+  }
+}
+
 function fixedStep(
   state: SimulationState,
   config: GameConfig,
@@ -991,6 +1009,16 @@ function fixedStep(
   let nextState: SimulationState = {
     ...state,
     elapsedMs: state.elapsedMs + config.timing.fixedStepMs,
+  }
+
+  if (
+    nextState.timeLimitMs !== null &&
+    // The step is 16.6…ms, so accumulating a whole number of steps lands a
+    // float hair short of a round limit (2 minutes comes out 9e-13ms light).
+    // Without the slack the run would get one extra step it did not earn.
+    nextState.elapsedMs >= nextState.timeLimitMs - 1e-6
+  ) {
+    return endTimedRun(nextState)
   }
 
   if (
@@ -1011,9 +1039,15 @@ function fixedStep(
   return nextState
 }
 
+export interface SimulationOptions {
+  /** Ends the run once the simulation clock reaches this many milliseconds. */
+  timeLimitMs?: number | null
+}
+
 export function createSimulation(
   seed: string,
   config: GameConfig = defaultGameConfig,
+  options: SimulationOptions = {},
 ): SimulationState {
   const initialRandomState = seedToRandomState(seed)
   const initial = createInitialBoard(initialRandomState, config)
@@ -1031,6 +1065,8 @@ export function createSimulation(
     dangerRemainingMs: null,
     manualRaise: false,
     status: 'playing',
+    timeLimitMs: options.timeLimitMs ?? null,
+    endReason: null,
     phase: 'idle',
     phaseStartedAt: 0,
     matchedPanelIds: [],

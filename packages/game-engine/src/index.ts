@@ -4,7 +4,7 @@ export {
   shockAttackBlocks,
 } from './attacks'
 export { createEmptyBoard, createInitialBoard, generateIncomingRow, insertIncomingRow } from './board'
-export { defaultGameConfig } from './config'
+export { defaultGameConfig, timeTrialDurationMs } from './config'
 export { advanceDangerState, boardTouchesTop } from './danger'
 export { applyGravity, isBoardStable } from './gravity'
 export {
@@ -40,6 +40,7 @@ export {
   setPaused,
   simulationChecksum,
   stepSimulation,
+  type SimulationOptions,
 } from './simulation'
 export {
   NORMAL_PANEL_TYPES,
@@ -65,6 +66,7 @@ export {
   type ResolutionPhase,
   type RiseConfig,
   type RoundStatus,
+  type RunEndReason,
   type ScoreTableEntry,
   type ScoringConfig,
   type SimulationState,

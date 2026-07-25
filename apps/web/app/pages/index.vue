@@ -75,6 +75,11 @@ async function joinPrivateMatch(): Promise<void> {
 
         <div class="divider"><span>or play alone</span></div>
 
+        <NuxtLink class="secondary-action secondary-action--link" to="/time-trial">
+          <Icon name="solar:stopwatch-bold" />
+          Two-minute time trial
+        </NuxtLink>
+
         <NuxtLink class="secondary-action secondary-action--link" to="/solo">
           <Icon name="solar:medal-ribbons-star-bold" />
           Endless score attack

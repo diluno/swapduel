@@ -268,6 +268,44 @@ export const simulationDesyncSchema = z.object({
   detectedAt: z.number().finite().nonnegative(),
 }).strict()
 
+/**
+ * Time-trial leaderboard. Scores arrive over plain HTTP from a client-side
+ * simulation, so these bounds are sanity limits rather than proof of anything:
+ * they keep obvious nonsense out of the table, not a determined cheat.
+ */
+export const LEADERBOARD_MAX_SCORE = 2_000_000
+export const LEADERBOARD_PAGE_SIZE = 20
+
+export const leaderboardSubmissionSchema = z.object({
+  protocolVersion: z.literal(PROTOCOL_VERSION),
+  displayName: displayNameSchema,
+  score: nonNegativeInteger.max(LEADERBOARD_MAX_SCORE),
+  totalCleared: nonNegativeInteger.max(100_000),
+  /** How far the run actually got; a timed run that topped out ends early. */
+  durationMs: z.number().int().nonnegative().max(600_000),
+  seed: id,
+}).strict()
+
+export const leaderboardEntrySchema = z.object({
+  entryId: id,
+  displayName: displayNameSchema,
+  score: nonNegativeInteger,
+  totalCleared: nonNegativeInteger,
+  durationMs: z.number().int().nonnegative(),
+  submittedAt: z.number().int().positive(),
+}).strict()
+
+export const leaderboardPageSchema = z.object({
+  entries: z.array(leaderboardEntrySchema).max(100),
+}).strict()
+
+export const leaderboardResultSchema = z.object({
+  entry: leaderboardEntrySchema,
+  /** One-based position in the all-time table, or null past the tail. */
+  rank: z.number().int().positive().nullable(),
+  entries: z.array(leaderboardEntrySchema).max(100),
+}).strict()
+
 export interface ClockSample {
   sentAt: number
   receivedAt: number
@@ -337,3 +375,9 @@ export type SimulationChecksumReport = z.infer<
   typeof simulationChecksumReportSchema
 >
 export type SimulationDesync = z.infer<typeof simulationDesyncSchema>
+export type LeaderboardSubmission = z.infer<
+  typeof leaderboardSubmissionSchema
+>
+export type LeaderboardEntry = z.infer<typeof leaderboardEntrySchema>
+export type LeaderboardPage = z.infer<typeof leaderboardPageSchema>
+export type LeaderboardResult = z.infer<typeof leaderboardResultSchema>

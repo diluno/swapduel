@@ -177,6 +177,12 @@ export type ResolutionPhase =
   | 'fall-delay'
 export type RoundStatus = 'playing' | 'paused' | 'lost'
 
+/**
+ * Why a run ended. `topped-out` is the stack reaching the line; `time-up` only
+ * ever happens in a timed run (see {@link SimulationState.timeLimitMs}).
+ */
+export type RunEndReason = 'topped-out' | 'time-up'
+
 export interface SimulationState {
   seed: string
   randomState: number
@@ -190,6 +196,12 @@ export interface SimulationState {
   dangerRemainingMs: number | null
   manualRaise: boolean
   status: RoundStatus
+  /**
+   * Simulation time at which a timed run ends, or `null` for an open-ended one.
+   * Untimed modes leave this null and behave exactly as before.
+   */
+  timeLimitMs: number | null
+  endReason: RunEndReason | null
   /** Derived from `clears` and garbage each step; never branched on. */
   phase: ResolutionPhase
   phaseStartedAt: number

@@ -1370,7 +1370,11 @@ export function drawBoard(
     context.textAlign = 'center'
     context.textBaseline = 'middle'
     context.fillText(
-      state.status === 'lost' ? 'TOP OUT' : 'PAUSED',
+      state.status !== 'lost'
+        ? 'PAUSED'
+        : state.endReason === 'time-up'
+          ? "TIME'S UP"
+          : 'TOP OUT',
       cssWidth / 2,
       cssHeight / 2,
     )

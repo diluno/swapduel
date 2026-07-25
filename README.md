@@ -51,6 +51,13 @@ plus returns a visible diagnostic only if the same player reports conflicting
 checksums for one simulation step. Opponents are intentionally never compared
 because their independently controlled boards are expected to diverge.
 
+Two solo modes sit alongside the duel. Endless score attack runs until the
+stack tops out; the two-minute time trial ends on the buzzer — or early if the
+stack tops out first — and submits its score to a shared leaderboard over
+`/api/leaderboard`. Leaderboard scores come from a client-side simulation and
+are accepted on trust, bounded only by schema limits and per-address rate
+limits, so treat the table as a scoreboard among friends rather than a record.
+
 ## Requirements
 
 - Node.js 22 or newer
@@ -84,6 +91,14 @@ long-running Railway service with a `/health` deployment check. Connect this
 repository to a Railway service, keep the service root at `/`, and enable
 public networking. Railway supplies `PORT`; no application variables are
 required for the same-origin setup.
+
+The time-trial leaderboard is a SQLite file, the only durable state in the
+service. It lives at `LEADERBOARD_DB_PATH` (default `data/leaderboard.db` in the
+repository root, `/app/data/leaderboard.db` in the container, where a Railway
+volume is mounted). Its directory is created on boot; if the path cannot be
+opened the leaderboard endpoints return 503 and everything else runs normally.
+`node:sqlite` is still flagged on Node 22, so the server is started with
+`--experimental-sqlite`.
 
 Set `APP_ORIGIN` and `NUXT_PUBLIC_SOCKET_URL` only when the web client is hosted
 on a different origin. Production defaults to trusting one reverse-proxy hop

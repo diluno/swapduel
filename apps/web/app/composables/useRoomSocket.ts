@@ -35,7 +35,6 @@ import {
 import { io, type Socket } from 'socket.io-client'
 
 const SESSION_STORAGE_KEY = 'swapduel:room-session'
-const DISPLAY_NAME_STORAGE_KEY = 'swapduel:display-name'
 const ROUND_PREPARATION_KEY = 'swapduel:round-preparation'
 const ROUND_STARTING_KEY = 'swapduel:round-starting'
 const ROUND_RESULT_KEY = 'swapduel:round-result'
@@ -58,6 +57,7 @@ const attackRetryTimers = new Map<
 const attackDeliveriesInFlight = new Set<string>()
 
 export function useRoomSocket() {
+  const { readPlayerName, rememberPlayerName } = usePlayerName()
   const config = useRuntimeConfig()
   const connected = useState('room-connected', () => false)
   const clockSynchronized = useState(
@@ -229,10 +229,7 @@ export function useRoomSocket() {
         ({ playerId }) => playerId === nextSession.playerId,
       )
       if (player !== undefined) {
-        localStorage.setItem(
-          DISPLAY_NAME_STORAGE_KEY,
-          player.displayName,
-        )
+        rememberPlayerName(player.displayName)
       }
     }
   }
@@ -956,8 +953,7 @@ export function useRoomSocket() {
   }
 
   function getSavedDisplayName(): string {
-    if (!import.meta.client) return ''
-    return localStorage.getItem(DISPLAY_NAME_STORAGE_KEY) ?? ''
+    return readPlayerName()
   }
 
   if (import.meta.client) {

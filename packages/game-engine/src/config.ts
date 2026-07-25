@@ -1,5 +1,12 @@
 import type { GameConfig } from './types'
 
+/**
+ * How long a time-trial run lasts. Two minutes is long enough for the rise to
+ * accelerate twice and for a deliberate chain setup to pay off, and short enough
+ * that a leaderboard attempt is a commute-sized decision.
+ */
+export const timeTrialDurationMs = 120_000
+
 export const defaultGameConfig: GameConfig = {
   board: {
     columns: 6,

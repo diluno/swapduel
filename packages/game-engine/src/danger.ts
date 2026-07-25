@@ -60,10 +60,13 @@ export function advanceDangerState(
     state.dangerRemainingMs - config.timing.fixedStepMs,
   )
 
+  const toppedOut = dangerRemainingMs === 0
+
   return {
     ...state,
     dangerRemainingMs,
-    status: dangerRemainingMs === 0 ? 'lost' : state.status,
-    manualRaise: dangerRemainingMs === 0 ? false : state.manualRaise,
+    status: toppedOut ? 'lost' : state.status,
+    endReason: toppedOut ? 'topped-out' : state.endReason,
+    manualRaise: toppedOut ? false : state.manualRaise,
   }
 }

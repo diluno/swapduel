@@ -5,6 +5,7 @@
 .pnpm-store
 node_modules
 coverage
+data
 playwright-report
 test-results
 *.log

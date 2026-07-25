@@ -1,13 +1,15 @@
 # Swapduel — Infrastructure
 
-Last audited: 2026-07-24 · Verified against the live Railway project via CLI.
+Last audited: 2026-07-25 · Verified against the live Railway project via CLI
+and the Railway API.
 
 ## Shape of the thing
 
 Single long-running Node service. `pnpm build` generates the Nuxt client as
 **static** assets (`nuxt generate`), and the Express + Socket.IO process serves
 those assets *and* the realtime connection from **one origin**. There is no
-separate frontend host and no database.
+separate frontend host and no database *service* — the only durable state is a
+SQLite file on a Railway volume holding the time-trial leaderboard.
 
     apps/web        Nuxt 4 client (generated to .output/public)
     apps/server     Express 5 + Socket.IO 4, in-memory room state
@@ -22,6 +24,8 @@ separate frontend host and no database.
 - **Project:** `swapduel` — `10183411-df26-4259-9b3e-7092b36067be`
 - **Environment:** `production` — `0f807469-5be7-405b-8814-888ddbe11380`
 - **Service:** `swapduel` — `08d0e0d4-0a71-442f-8e31-c102900edc78`
+- **Volume:** `swapduel-volume` — `349f9913-ceef-46d1-8a7f-1149a2dc0cde`,
+  mounted at `/app/data`, holds `leaderboard.db`. Created 2026-07-25.
 - **Internal DNS:** `swapduel.railway.internal`
 - **Health check:** `GET /health` → `{"service":"swapduel","status":"ok"}`,
   120s timeout, `ON_FAILURE` restart (max 10), 10s drain.
@@ -87,9 +91,9 @@ Local production check:
 
 ## Environment variables
 
-**Confirmed: no application variables are set on the service.** `railway
-variable list` returns only Railway-injected `RAILWAY_*` values, so the
-same-origin defaults below are what production actually runs on.
+**One application variable is set:** `LEADERBOARD_DB_PATH=/app/data/leaderboard.db`
+(set 2026-07-25, pointing at the volume). Everything else is Railway-injected
+`RAILWAY_*`, so the same-origin defaults below are what production runs on.
 
 No `.env` is committed and none exists locally; `.gitignore` excludes
 `.env` / `.env.*`. There is no `.env.example`. Any values added later live
@@ -103,6 +107,7 @@ in the **Railway service variables** dashboard.
 | `TRUST_PROXY` | `true` when `NODE_ENV=production` | Set `false` if exposed directly, not behind a proxy |
 | `WEB_PUBLIC_DIR` | `apps/web/.output/public` | Rarely — non-standard asset location |
 | `NODE_ENV` | — | Set to `production` in the image |
+| `LEADERBOARD_DB_PATH` | `<repo>/data/leaderboard.db` | Set to the volume path in production |
 
 No secrets, API keys, or credentials exist anywhere in this project.
 
@@ -131,7 +136,20 @@ Both are cleared on `SIGTERM`/`SIGINT`, with a 10s forced-exit backstop.
 
 ## Quirks worth knowing
 
-- **All state is in memory.** `RoomStore` is `Map`-backed with no persistence.
+- **The leaderboard is the one durable thing, and it is single-writer.** SQLite
+  in WAL mode on `/app/data`, opened by the single instance. It is another
+  reason not to scale to a second replica: two containers cannot share the
+  volume. If the volume is missing or the mount is not writable by the `node`
+  user, boot logs `Leaderboard storage at … is unavailable`, `/api/leaderboard`
+  returns 503, and the rest of the game is unaffected — check that first if
+  scores stop saving. The Dockerfile pre-creates `/app/data` owned by `node`;
+  a freshly mounted volume overlays it, so ownership is worth verifying with
+  `railway ssh` after the first deploy that uses it.
+- `node:sqlite` is **flagged on Node 22** (the image), unflagged from 24. The
+  server therefore runs with `--experimental-sqlite` in the Dockerfile CMD, the
+  `start`/`dev` scripts, and `apps/server/vitest.config.ts`. Removing that flag
+  breaks the leaderboard on 22; a bump to Node 24 makes it a harmless no-op.
+- **All other state is in memory.** `RoomStore` is `Map`-backed with no persistence.
   *Any deploy or restart drops every active room and match in progress.*
   This is the single most important operational fact here — deploys are not
   zero-downtime for players mid-match. There is also no horizontal scaling:
