@@ -37,17 +37,19 @@ export const defaultGameConfig: GameConfig = {
     dangerGraceMs: 3000,
   },
   rise: {
-    startingRowsPerSecond: 0.05,
-    // Fifteen steps of 12% each. At the old 30s interval top speed arrived
+    // A row every ~8 seconds at the start. The old 0.05 (20s a row) left the
+    // opening minute with no pressure at all, so a run only became a game once
+    // the accelerations had piled up.
+    startingRowsPerSecond: 0.12,
+    // Thirteen steps of 12% each. At the old 30s interval top speed arrived
     // 7.5 minutes in, which is a long time to wait for the pressure that makes
-    // a run interesting; this reaches the cap just under four minutes.
+    // a run interesting; this reaches the cap just over three minutes.
     speedIncreaseIntervalSeconds: 15,
     speedMultiplierPerIncrease: 1.12,
-    maximumRowsPerSecond: 0.25,
-    // Holding raise should feel like a snap-scroll, not a slightly brisker
-    // automatic rise: a row every third of a second, ~12x the top automatic
-    // speed, so pulling a fresh row down is a deliberate beat rather than a wait.
-    manualRowsPerSecond: 3,
+    // Two seconds a row at the cap — fast enough that surviving takes clearing
+    // as quickly as the board fills.
+    maximumRowsPerSecond: 0.5,
+    manualRowsPerSecond: 0.9,
     manualStopDrainMultiplier: 3,
   },
   attacks: {
