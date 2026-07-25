@@ -731,11 +731,41 @@ function advancePanelGravity(
   return { ...state, board: { ...state.board, cells } }
 }
 
+/**
+ * Backstop against a frozen block: with no swap in flight nothing on the board
+ * may still be 'swapping'. Such a panel would refuse further swaps and gravity
+ * would skip it, so it is released back to idle rather than left stuck.
+ */
+function releaseStraySwapStates(state: SimulationState): SimulationState {
+  if (state.pendingSwap !== null) {
+    return state
+  }
+
+  let changed = false
+  const cells = state.board.cells.map((row) =>
+    row.map((panel) => {
+      if (panel === null || panel.state !== 'swapping') {
+        return panel
+      }
+      changed = true
+      return {
+        ...panel,
+        state: 'idle' as const,
+        offsetX: 0,
+        animationStartedAt: null,
+      }
+    }),
+  )
+
+  return changed ? { ...state, board: { ...state.board, cells } } : state
+}
+
 function advanceResolution(
   state: SimulationState,
   config: GameConfig,
 ): SimulationState {
-  let next = advanceClearGroups(state, config)
+  let next = releaseStraySwapStates(state)
+  next = advanceClearGroups(next, config)
   next = advanceGarbageConversion(next, config)
   next = advancePanelGravity(next, config)
 
@@ -954,6 +984,12 @@ function advanceRise(
   let garbage = state.garbage
   let status = state.status
   let dangerRemainingMs: number | null = state.dangerRemainingMs
+  // A manual raise is allowed to run while a swap is in flight, so the row it
+  // inserts pushes the swapping panels up a row. The pending swap has to follow
+  // them: left pointing at their old coordinates it would complete on the wrong
+  // cells and strand the real panels in 'swapping' forever — unswappable and
+  // invisible to gravity.
+  let pendingSwap = state.pendingSwap
 
   while (riseOffset >= 1 && status === 'playing') {
     const inserted = insertIncomingRow(board, randomState, config)
@@ -970,6 +1006,13 @@ function advanceRise(
       conversionRow:
         block.conversionRow === null ? null : block.conversionRow + 1,
     }))
+    if (pendingSwap !== null) {
+      pendingSwap = {
+        ...pendingSwap,
+        from: { ...pendingSwap.from, row: pendingSwap.from.row + 1 },
+        to: { ...pendingSwap.to, row: pendingSwap.to.row + 1 },
+      }
+    }
     randomState = inserted.randomState
     riseOffset -= 1
   }
@@ -984,6 +1027,7 @@ function advanceRise(
     status,
     dangerRemainingMs,
     stopTimeRemainingMs,
+    pendingSwap,
   }
 }
 
