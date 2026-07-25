@@ -73,7 +73,7 @@ stagger is the signature of the original.
   (`attacks.ts:49-51`); SNES chain garbage is always full-width with
   height = chain level − 1. Cap it and stagger multiple slabs for monster
   chains in versus.
-- **4.3 Scoring / solo mode:** round-wins-only is fine for duels, but a classic
+- **4.3 Scoring / solo mode — ✅ done (endless only; no leaderboard):** round-wins-only is fine for duels, but a classic
   point table (combos/chains) would enable an endless/score-attack solo
   mode — a big fun multiplier when no opponent is around, and a training
   ground for chains.

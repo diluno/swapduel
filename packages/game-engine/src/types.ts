@@ -99,6 +99,19 @@ export interface GarbageConversionState {
   releaseAt: number | null
 }
 
+export interface ScoreTableEntry {
+  minimum: number
+  maximum: number | null
+  points: number
+}
+
+export interface ScoringConfig {
+  /** Points every cleared panel is worth, before bonuses. */
+  panelPoints: number
+  comboTable: ScoreTableEntry[]
+  chainTable: ScoreTableEntry[]
+}
+
 export interface AttackTableEntry {
   minimum: number
   maximum: number | null
@@ -173,6 +186,8 @@ export interface SimulationState {
   garbageConversion: GarbageConversionState | null
   totalCleared: number
   lastClearSize: number
+  /** Points earned this round, from the scoring tables. */
+  score: number
 }
 
 export interface BoardConfig {
@@ -227,6 +242,7 @@ export interface GameConfig {
   timing: TimingConfig
   rise: RiseConfig
   attacks: AttackConfig
+  scoring: ScoringConfig
 }
 
 export type SwapResult =

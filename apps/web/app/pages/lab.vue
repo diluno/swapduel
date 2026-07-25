@@ -61,17 +61,6 @@ let accumulatorMs = 0
 let lastAudioClearAt =
   state.value.lastClearEvent?.occurredAt ?? Number.NEGATIVE_INFINITY
 let resizeObserver: ResizeObserver | null = null
-let activePointer:
-  | {
-      id: number
-      row: number
-      column: number
-      startX: number
-      startY: number
-      triggered: boolean
-      verticalRejected: boolean
-    }
-  | null = null
 let raiseTimer: ReturnType<typeof setTimeout> | null = null
 let labAttackSequence = 1
 
@@ -191,6 +180,78 @@ function forceCombo(): void {
   }
   lastAudioClearAt = Number.NEGATIVE_INFINITY
   message.value = 'Forced a four-panel match'
+}
+
+// The other scenarios all wipe garbage, so there was no way to watch a block
+// break apart. This drops a slab onto a row that is about to clear underneath
+// it, which is exactly the case the conversion animation exists for.
+function forceGarbageClear(width: number, height: number): void {
+  const template = state.value.board.cells
+    .flat()
+    .find((panel) => panel !== null)
+  if (template === null || template === undefined) {
+    message.value = 'Reset the board before forcing a garbage clear'
+    return
+  }
+
+  const cells = Array.from(
+    { length: state.value.board.visibleRows },
+    () =>
+      Array.from(
+        { length: state.value.board.columns },
+        () => null as typeof template | null,
+      ),
+  )
+  // A matching run under the slab, plus a spare panel so the board is not
+  // completely bare once it clears.
+  for (let column = 0; column < state.value.board.columns; column += 1) {
+    cells[0]![column] = {
+      ...template,
+      id: template.id + column,
+      type: column < width ? 'circle' : 'heart',
+      row: 0,
+      column,
+      state: 'idle',
+      offsetX: 0,
+      offsetY: 0,
+      chainEligible: false,
+      chainId: null,
+      animationStartedAt: null,
+    }
+  }
+
+  state.value = {
+    ...state.value,
+    board: { ...state.value.board, cells },
+    status: 'playing',
+    phase: 'idle',
+    matchedPanelIds: [],
+    pendingSwap: null,
+    chain: null,
+    garbage: [
+      {
+        id: state.value.nextGarbageId,
+        type: 'normal',
+        column: 0,
+        row: 1,
+        width,
+        height,
+        conversionRow: null,
+        state: 'idle',
+        fallProgress: 0,
+      },
+    ],
+    nextGarbageId: state.value.nextGarbageId + 1,
+    incomingGarbage: [],
+    garbageConversion: null,
+    dangerRemainingMs: null,
+    manualRaise: false,
+    outgoingAttacks: [],
+    lastClearEvent: null,
+  }
+  lastAudioClearAt = Number.NEGATIVE_INFINITY
+  impactTracker.reset()
+  message.value = `Forced a clear under a ${height}×${width} block`
 }
 
 function forceShockMatch(): void {
@@ -405,32 +466,6 @@ function importState(): void {
   }
 }
 
-function boardCoordinate(
-  event: PointerEvent,
-): { row: number; column: number } | null {
-  const target = canvas.value
-  if (target === null) return null
-  const bounds = target.getBoundingClientRect()
-  const cellSize = bounds.width / state.value.board.columns
-  const x = event.clientX - bounds.left
-  const y = event.clientY - bounds.top
-  const column = Math.floor(x / cellSize)
-  const row = Math.floor(
-    (bounds.height - y) / cellSize - state.value.riseOffset,
-  )
-
-  if (
-    row < 0 ||
-    row >= state.value.board.visibleRows ||
-    column < 0 ||
-    column >= state.value.board.columns
-  ) {
-    return null
-  }
-
-  return { row, column }
-}
-
 function trySwap(row: number, column: number, direction: -1 | 1): boolean {
   const result = requestSwap(state.value, { row, column, direction })
   state.value = result.state
@@ -442,83 +477,27 @@ function trySwap(row: number, column: number, direction: -1 | 1): boolean {
   return result.ok
 }
 
-function onBoardPointerDown(event: PointerEvent): void {
-  unlockAudio()
-  hideCursor()
-  if (activePointer !== null) return
-  const coordinate = boardCoordinate(event)
-  if (coordinate === null) {
-    selected.value = null
-    return
-  }
-
-  canvas.value?.setPointerCapture(event.pointerId)
-  activePointer = {
-    id: event.pointerId,
-    row: coordinate.row,
-    column: coordinate.column,
-    startX: event.clientX,
-    startY: event.clientY,
-    triggered: false,
-    verticalRejected: false,
-  }
-}
-
-function onBoardPointerMove(event: PointerEvent): void {
-  if (activePointer === null || activePointer.id !== event.pointerId) return
-
-  const horizontal = event.clientX - activePointer.startX
-  const vertical = event.clientY - activePointer.startY
-  if (
-    !activePointer.triggered &&
-    Math.abs(vertical) > Math.abs(horizontal) &&
-    Math.abs(vertical) > 8
-  ) {
-    activePointer.verticalRejected = true
-  }
-
-  const bounds = canvas.value?.getBoundingClientRect()
-  if (
-    bounds === undefined ||
-    activePointer.triggered ||
-    activePointer.verticalRejected ||
-    Math.abs(horizontal) < (bounds.width / state.value.board.columns) * 0.28
-  ) {
-    return
-  }
-
-  activePointer.triggered = trySwap(
-    activePointer.row,
-    activePointer.column,
-    horizontal < 0 ? -1 : 1,
-  )
-}
-
-function onBoardPointerEnd(event: PointerEvent): void {
-  if (activePointer === null || activePointer.id !== event.pointerId) return
-
-  if (!activePointer.triggered && !activePointer.verticalRejected) {
-    const tapped = boardCoordinate(event)
-    if (tapped !== null) {
-      if (
-        selected.value !== null &&
-        selected.value.row === tapped.row &&
-        Math.abs(selected.value.column - tapped.column) === 1
-      ) {
-        trySwap(
-          selected.value.row,
-          selected.value.column,
-          tapped.column > selected.value.column ? 1 : -1,
-        )
-      } else {
-        selected.value = tapped
-        message.value = `Selected row ${tapped.row}, column ${tapped.column}`
-      }
-    }
-  }
-
-  activePointer = null
-}
+const {
+  onPointerDown: onBoardPointerDown,
+  onPointerMove: onBoardPointerMove,
+  onPointerEnd: onBoardPointerEnd,
+} = useBoardPointer({
+  canvas: () => canvas.value,
+  state: () => state.value,
+  isLive: () => true,
+  swap: trySwap,
+  selected,
+  onPress: () => {
+    unlockAudio()
+    hideCursor()
+  },
+  onSelect: (coordinate) => {
+    message.value =
+      coordinate === null
+        ? 'Selection cleared'
+        : `Selected row ${coordinate.row}, column ${coordinate.column}`
+  },
+})
 
 function startRaise(event: PointerEvent): void {
   unlockAudio()
@@ -617,6 +596,12 @@ onBeforeUnmount(() => {
         <button @click="forceShockMatch">Force shock match</button>
         <button @click="forceChain">Force ×2 chain</button>
         <button @click="forceDanger">Force danger</button>
+        <button @click="forceGarbageClear(3, 1)">
+          Break 1×3 garbage
+        </button>
+        <button @click="forceGarbageClear(6, 2)">
+          Break 2×6 garbage
+        </button>
         <button @click="addGarbage(3, 1, 'normal')">
           Add 1×3 garbage
         </button>

@@ -264,17 +264,6 @@ let resizeObserver: ResizeObserver | null = null
 let raiseTimer: ReturnType<typeof setTimeout> | null = null
 let localDisconnectTimer: ReturnType<typeof setTimeout> | null = null
 let roundConfirmationInFlight = false
-let activePointer:
-  | {
-      id: number
-      row: number
-      column: number
-      startX: number
-      startY: number
-      triggered: boolean
-      verticalRejected: boolean
-    }
-  | null = null
 
 useHead({
   title: 'Live match · Swapduel',
@@ -702,8 +691,7 @@ function suspendForBackground(): void {
   lastRenderAt = 0
   lastUiUpdateAt = 0
   stopRaise()
-  selected.value = null
-  activePointer = null
+  resetBoardPointer()
 }
 
 async function resumeFromBackground(): Promise<void> {
@@ -740,30 +728,6 @@ function handleVisibilityChange(): void {
   void resumeFromBackground()
 }
 
-function boardCoordinate(
-  event: PointerEvent,
-): { row: number; column: number } | null {
-  const target = canvas.value
-  if (target === null) return null
-  const bounds = target.getBoundingClientRect()
-  const cellSize = bounds.width / simulationState.board.columns
-  const column = Math.floor((event.clientX - bounds.left) / cellSize)
-  const row = Math.floor(
-    (bounds.height - (event.clientY - bounds.top)) / cellSize -
-      simulationState.riseOffset,
-  )
-
-  if (
-    row < 0 ||
-    row >= simulationState.board.visibleRows ||
-    column < 0 ||
-    column >= simulationState.board.columns
-  ) {
-    return null
-  }
-  return { row, column }
-}
-
 function trySwap(row: number, column: number, direction: -1 | 1): boolean {
   if (!isRoundLiveAt(getServerNow())) return false
   const result = requestSwap(simulationState, { row, column, direction })
@@ -776,83 +740,23 @@ function trySwap(row: number, column: number, direction: -1 | 1): boolean {
   return result.ok
 }
 
-function onBoardPointerDown(event: PointerEvent): void {
-  unlockAudio()
-  hideCursor()
-  if (!roundIsLive.value || activePointer !== null) return
-  const coordinate = boardCoordinate(event)
-  if (coordinate === null) {
-    selected.value = null
-    return
-  }
-
-  canvas.value?.setPointerCapture(event.pointerId)
-  activePointer = {
-    id: event.pointerId,
-    row: coordinate.row,
-    column: coordinate.column,
-    startX: event.clientX,
-    startY: event.clientY,
-    triggered: false,
-    verticalRejected: false,
-  }
-}
-
-function onBoardPointerMove(event: PointerEvent): void {
-  if (activePointer === null || activePointer.id !== event.pointerId) return
-
-  const horizontal = event.clientX - activePointer.startX
-  const vertical = event.clientY - activePointer.startY
-  if (
-    !activePointer.triggered &&
-    Math.abs(vertical) > Math.abs(horizontal) &&
-    Math.abs(vertical) > 8
-  ) {
-    activePointer.verticalRejected = true
-  }
-
-  const bounds = canvas.value?.getBoundingClientRect()
-  if (
-    bounds === undefined ||
-    activePointer.triggered ||
-    activePointer.verticalRejected ||
-    Math.abs(horizontal) <
-      (bounds.width / simulationState.board.columns) * 0.28
-  ) {
-    return
-  }
-
-  activePointer.triggered = trySwap(
-    activePointer.row,
-    activePointer.column,
-    horizontal < 0 ? -1 : 1,
-  )
-}
-
-function onBoardPointerEnd(event: PointerEvent): void {
-  if (activePointer === null || activePointer.id !== event.pointerId) return
-
-  if (!activePointer.triggered && !activePointer.verticalRejected) {
-    const tapped = boardCoordinate(event)
-    if (tapped !== null) {
-      if (
-        selected.value !== null &&
-        selected.value.row === tapped.row &&
-        Math.abs(selected.value.column - tapped.column) === 1
-      ) {
-        trySwap(
-          selected.value.row,
-          selected.value.column,
-          tapped.column > selected.value.column ? 1 : -1,
-        )
-      } else {
-        selected.value = tapped
-        requestRender()
-      }
-    }
-  }
-  activePointer = null
-}
+const {
+  onPointerDown: onBoardPointerDown,
+  onPointerMove: onBoardPointerMove,
+  onPointerEnd: onBoardPointerEnd,
+  reset: resetBoardPointer,
+} = useBoardPointer({
+  canvas: () => canvas.value,
+  state: () => simulationState,
+  isLive: () => roundIsLive.value,
+  swap: trySwap,
+  selected,
+  onPress: () => {
+    unlockAudio()
+    hideCursor()
+  },
+  onSelect: () => requestRender(),
+})
 
 function startRaise(event: PointerEvent): void {
   unlockAudio()
@@ -973,6 +877,9 @@ onBeforeUnmount(() => {
 
     <section v-else class="game-layout">
       <header class="scorebar">
+        <NuxtLink class="exit" to="/" aria-label="Leave match">
+          <span aria-hidden="true">←</span>
+        </NuxtLink>
         <div class="player-score">
           <strong>{{ ownPlayer?.displayName ?? 'You' }}</strong>
           <span>{{ scoreDots(ownWins) }}</span>
@@ -1156,6 +1063,11 @@ onBeforeUnmount(() => {
 <style scoped>
 .game-shell {
   height: 100dvh;
+  /* Holding the raise button on iOS otherwise long-presses into a text
+     selection and the callout menu, which fights the hold gesture. */
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
   /* Capped at the viewport: a bare 520px floor made the shell taller than a
      landscape phone and scrolled the page. The layout compresses instead. */
   min-height: min(520px, 100dvh);
@@ -1176,9 +1088,26 @@ onBeforeUnmount(() => {
   margin: 0 auto;
 }
 
+.exit {
+  display: flex;
+  width: 34px;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 17px;
+  background: #fff4e8;
+  box-shadow:
+    inset 0 2px 0 rgba(255, 255, 255, 0.9),
+    0 3px 7px rgba(110, 86, 72, 0.09);
+  color: #b08a72;
+  font-size: 1.05rem;
+  line-height: 1;
+  text-decoration: none;
+}
+
 .scorebar {
   display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  grid-template-columns: auto 1fr auto 1fr;
   align-items: center;
   gap: 10px;
   min-height: 54px;
@@ -1664,6 +1593,8 @@ onBeforeUnmount(() => {
   font-weight: 600;
   touch-action: none;
   user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
 .raise:active {

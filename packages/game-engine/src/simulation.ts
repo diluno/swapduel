@@ -20,6 +20,7 @@ import {
 import { applyGravity, isBoardStable } from './gravity'
 import { findMatches } from './matches'
 import { randomInteger, seedToRandomState } from './random'
+import { clearScore } from './scoring'
 import type {
   Board,
   Coordinate,
@@ -256,6 +257,17 @@ function beginMatchResolution(
     config.timing.maximumStopTimeMs,
     state.stopTimeRemainingMs + comboStopMs + chainStopMs,
   )
+  const score =
+    state.score +
+    clearScore(
+      {
+        size: matchedPanelIds.length,
+        normalSize,
+        chainLevel: chain.level,
+        qualifiedForChain,
+      },
+      config,
+    )
 
   return {
     ...state,
@@ -278,6 +290,7 @@ function beginMatchResolution(
     garbage: conversion.garbage,
     garbageConversion: conversion.garbageConversion,
     stopTimeRemainingMs,
+    score,
     lastClearEvent: {
       size: matchedPanelIds.length,
       normalSize,
@@ -902,6 +915,7 @@ export function createSimulation(
     garbageConversion: null,
     totalCleared: 0,
     lastClearSize: 0,
+    score: 0,
   }
 }
 
@@ -1148,6 +1162,7 @@ export function simulationChecksum(state: SimulationState): string {
         ].join(':'),
     panels,
     state.board.incomingRow.join(','),
+    state.score,
   ].join(';')
   let hash = 2166136261
 

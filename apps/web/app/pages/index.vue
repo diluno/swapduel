@@ -72,6 +72,12 @@ async function joinPrivateMatch(): Promise<void> {
           {{ busy ? 'Connecting…' : 'Create private match' }}
         </button>
 
+        <div class="divider"><span>or play alone</span></div>
+
+        <NuxtLink class="secondary-action secondary-action--link" to="/solo">
+          Endless score attack
+        </NuxtLink>
+
         <div class="divider"><span>or join a friend</span></div>
 
         <label>
@@ -247,6 +253,15 @@ h1 {
     0 3px 7px rgba(110, 86, 72, 0.09);
   color: #7a6557;
   font-weight: 600;
+}
+
+/* The same pill rendered as a link: an anchor stays inline, so it needs the
+   box and centring a button gets for free. */
+.secondary-action--link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
 }
 
 .primary-action:disabled,

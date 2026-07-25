@@ -25,6 +25,8 @@ const PANEL_COLORS: Record<
 }
 
 const COMBO_EFFECT_DURATION_MS = 1_100
+/** How long a panel freed from a garbage block plays its break-out flash. */
+const GARBAGE_REVEAL_MS = 190
 
 interface DrawBoardOptions {
   selected: { row: number; column: number } | null
@@ -298,6 +300,158 @@ function drawPanelSprite(
   )
 }
 
+interface GarbageSkin {
+  mortar: string
+  tileTop: string
+  tileMid: string
+  tileBottom: string
+  rim: string
+  shade: string
+  mark: string
+  shadow: string
+}
+
+const GARBAGE_SKINS: Record<GarbageBlock['type'], GarbageSkin> = {
+  normal: {
+    mortar: '#a3806a',
+    tileTop: '#f0dccb',
+    tileMid: '#dcc0aa',
+    tileBottom: '#c29f86',
+    rim: 'rgba(255, 250, 245, 0.8)',
+    shade: 'rgba(110, 78, 61, 0.18)',
+    mark: 'rgba(120, 84, 62, 0.42)',
+    shadow: 'rgba(110, 74, 54, 0.26)',
+  },
+  metal: {
+    mortar: '#5d8098',
+    tileTop: '#e9f3f9',
+    tileMid: '#bcd2e0',
+    tileBottom: '#94b4c7',
+    rim: 'rgba(248, 253, 255, 0.88)',
+    shade: 'rgba(48, 82, 106, 0.2)',
+    mark: 'rgba(58, 92, 116, 0.45)',
+    shadow: 'rgba(66, 112, 143, 0.3)',
+  },
+}
+
+// One cell of a slab, drawn as its own rounded brick so a block reads as a
+// wall of tiles in the same visual language as the panels it sits on, rather
+// than one flat sheet with seams scratched into it.
+function drawGarbageTile(
+  context: CanvasRenderingContext2D,
+  skin: GarbageSkin,
+  isMetal: boolean,
+  x: number,
+  y: number,
+  cellSize: number,
+  heat: number,
+): void {
+  const inset = cellSize * 0.055
+  const tileX = x + inset
+  const tileY = y + inset
+  const size = cellSize - inset * 2
+  const radius = cellSize * 0.19
+
+  context.save()
+  roundedRect(context, tileX, tileY, size, size, radius)
+  context.clip()
+
+  const face = context.createLinearGradient(tileX, tileY, tileX, tileY + size)
+  face.addColorStop(0, skin.tileTop)
+  face.addColorStop(0.55, skin.tileMid)
+  face.addColorStop(1, skin.tileBottom)
+  context.fillStyle = face
+  context.fillRect(tileX, tileY, size, size)
+
+  // Bevel: a bright lip along the top, a soft shadow pooling at the bottom.
+  context.fillStyle = 'rgba(255, 255, 255, 0.5)'
+  context.fillRect(tileX, tileY, size, Math.max(1.5, size * 0.14))
+  context.fillStyle = skin.shade
+  context.fillRect(tileX, tileY + size * 0.82, size, size * 0.18)
+
+  if (isMetal) {
+    context.strokeStyle = 'rgba(255, 255, 255, 0.26)'
+    context.lineWidth = Math.max(1.5, cellSize * 0.07)
+    context.beginPath()
+    context.moveTo(tileX - size * 0.1, tileY + size * 0.78)
+    context.lineTo(tileX + size * 0.72, tileY - size * 0.1)
+    context.stroke()
+  }
+
+  if (heat > 0) {
+    context.fillStyle = `rgba(255, 252, 246, ${0.72 * heat})`
+    context.fillRect(tileX, tileY, size, size)
+  }
+  context.restore()
+
+  // Centre mark: a rivet on metal, an embossed lozenge on the soft blocks.
+  const centerX = x + cellSize / 2
+  const centerY = y + cellSize / 2
+  context.save()
+  context.globalAlpha = Math.max(0, 1 - heat)
+  if (isMetal) {
+    context.beginPath()
+    context.arc(centerX, centerY, cellSize * 0.072, 0, Math.PI * 2)
+    context.fillStyle = '#eef6fb'
+    context.fill()
+    context.strokeStyle = skin.mark
+    context.lineWidth = Math.max(1, cellSize * 0.022)
+    context.stroke()
+  } else {
+    const mark = cellSize * 0.1
+    context.beginPath()
+    context.moveTo(centerX, centerY - mark)
+    context.lineTo(centerX + mark, centerY)
+    context.lineTo(centerX, centerY + mark)
+    context.lineTo(centerX - mark, centerY)
+    context.closePath()
+    context.fillStyle = 'rgba(255, 249, 242, 0.7)'
+    context.fill()
+    context.strokeStyle = skin.mark
+    context.lineWidth = Math.max(1, cellSize * 0.022)
+    context.stroke()
+  }
+  context.restore()
+
+  roundedRect(context, tileX, tileY, size, size, radius)
+  context.strokeStyle = skin.rim
+  context.lineWidth = Math.max(1, cellSize * 0.03)
+  context.stroke()
+}
+
+// Jagged fractures across a tile that is about to give way.
+function drawTileCracks(
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  cellSize: number,
+  seed: number,
+  alpha: number,
+): void {
+  context.save()
+  context.strokeStyle = `rgba(255, 252, 246, ${alpha})`
+  context.lineWidth = Math.max(1.5, cellSize * 0.04)
+  context.lineCap = 'round'
+  context.lineJoin = 'round'
+  const centerX = x + cellSize / 2
+  const centerY = y + cellSize / 2
+  for (let arm = 0; arm < 4; arm += 1) {
+    const angle = ((seed * 37 + arm * 120) % 360) * (Math.PI / 180)
+    context.beginPath()
+    context.moveTo(centerX, centerY)
+    context.lineTo(
+      centerX + Math.cos(angle) * cellSize * 0.2,
+      centerY + Math.sin(angle) * cellSize * 0.2,
+    )
+    context.lineTo(
+      centerX + Math.cos(angle + 0.5) * cellSize * 0.36,
+      centerY + Math.sin(angle + 0.5) * cellSize * 0.36,
+    )
+    context.stroke()
+  }
+  context.restore()
+}
+
 function drawGarbageBlock(
   context: CanvasRenderingContext2D,
   block: GarbageBlock,
@@ -307,192 +461,83 @@ function drawGarbageBlock(
   height: number,
   cellSize: number,
   reducedMotion: boolean,
+  elapsedMs: number,
 ): void {
   const isMetal = block.type === 'metal'
-  const inset = cellSize * 0.045
-  const depth = cellSize * 0.075
+  const skin = GARBAGE_SKINS[block.type]
+  const inset = cellSize * 0.03
   const bodyX = x + inset
   const bodyY = y + inset
   const bodyWidth = width - inset * 2
-  const bodyHeight = height - inset * 2 - depth
-  const radius = cellSize * 0.17
+  const bodyHeight = height - inset * 2
+  const radius = cellSize * 0.22
+  const converting = block.state === 'converting'
+  // The whole slab throbs while it is breaking up, so the row coming apart is
+  // never the first hint that the block is going.
+  const pulse = reducedMotion
+    ? 0.5
+    : (1 + Math.sin(elapsedMs / 65)) / 2
 
   context.save()
-  context.shadowColor = isMetal
-    ? 'rgba(66, 112, 143, 0.28)'
-    : 'rgba(110, 74, 54, 0.24)'
+
+  // Mortar body, offset downward so the tiles sit in a lit recess.
+  context.shadowColor = skin.shadow
   context.shadowBlur =
-    block.state === 'falling' ? cellSize * 0.2 : cellSize * 0.09
+    block.state === 'falling' ? cellSize * 0.24 : cellSize * 0.11
   context.shadowOffsetY =
-    block.state === 'falling' ? cellSize * 0.09 : cellSize * 0.045
-
-  roundedRect(
-    context,
-    bodyX,
-    bodyY + depth,
-    bodyWidth,
-    bodyHeight,
-    radius,
-  )
-  context.fillStyle = isMetal ? '#6689a1' : '#9f7f6d'
-  context.fill()
-
+    block.state === 'falling' ? cellSize * 0.1 : cellSize * 0.05
   roundedRect(context, bodyX, bodyY, bodyWidth, bodyHeight, radius)
-  const surface = context.createLinearGradient(
-    bodyX,
-    bodyY,
-    bodyX,
-    bodyY + bodyHeight,
-  )
-  if (isMetal) {
-    surface.addColorStop(0, '#d9e8f1')
-    surface.addColorStop(0.46, '#adc7d8')
-    surface.addColorStop(1, '#86a8bd')
-  } else {
-    surface.addColorStop(0, '#ead8c8')
-    surface.addColorStop(0.5, '#cfb5a3')
-    surface.addColorStop(1, '#b79784')
-  }
-  context.fillStyle = surface
+  context.fillStyle = skin.mortar
   context.fill()
   context.shadowColor = 'transparent'
 
-  context.save()
-  roundedRect(context, bodyX, bodyY, bodyWidth, bodyHeight, radius)
-  context.clip()
-
-  context.fillStyle = isMetal
-    ? 'rgba(255, 255, 255, 0.44)'
-    : 'rgba(255, 250, 245, 0.42)'
-  context.fillRect(
-    bodyX,
-    bodyY,
-    bodyWidth,
-    Math.max(2, cellSize * 0.095),
-  )
-  context.fillStyle = isMetal
-    ? 'rgba(57, 92, 116, 0.16)'
-    : 'rgba(104, 72, 56, 0.14)'
-  context.fillRect(
-    bodyX,
-    bodyY + bodyHeight - cellSize * 0.1,
-    bodyWidth,
-    cellSize * 0.1,
-  )
-
-  if (isMetal) {
-    context.strokeStyle = 'rgba(255, 255, 255, 0.18)'
-    context.lineWidth = Math.max(2, cellSize * 0.08)
-    for (
-      let stripe = -bodyHeight;
-      stripe < bodyWidth + bodyHeight;
-      stripe += cellSize * 0.42
-    ) {
-      context.beginPath()
-      context.moveTo(bodyX + stripe, bodyY + bodyHeight)
-      context.lineTo(bodyX + stripe + bodyHeight, bodyY)
-      context.stroke()
-    }
-  }
-  context.restore()
-
-  context.strokeStyle = isMetal
-    ? 'rgba(65, 103, 128, 0.42)'
-    : 'rgba(104, 72, 56, 0.3)'
-  context.lineWidth = Math.max(1, cellSize * 0.025)
-  for (let column = 1; column < block.width; column += 1) {
-    const seamX = x + column * cellSize
-    context.beginPath()
-    context.moveTo(seamX, bodyY + cellSize * 0.08)
-    context.lineTo(seamX, bodyY + bodyHeight - cellSize * 0.08)
-    context.stroke()
-  }
-  for (let row = 1; row < block.height; row += 1) {
-    const seamY = y + row * cellSize
-    context.beginPath()
-    context.moveTo(bodyX + cellSize * 0.08, seamY)
-    context.lineTo(bodyX + bodyWidth - cellSize * 0.08, seamY)
-    context.stroke()
-  }
-
+  const conversionVisualRow = block.height - 1
   for (let row = 0; row < block.height; row += 1) {
     for (let column = 0; column < block.width; column += 1) {
-      const centerX = x + (column + 0.5) * cellSize
-      const centerY = y + (row + 0.5) * cellSize
-      if (isMetal) {
-        context.beginPath()
-        context.arc(
-          centerX,
-          centerY,
-          cellSize * 0.075,
-          0,
-          Math.PI * 2,
+      const tileX = x + column * cellSize
+      const tileY = y + row * cellSize
+      const breaking = converting && row === conversionVisualRow
+      const heat = breaking ? 0.25 + 0.4 * pulse : converting ? 0.1 * pulse : 0
+      drawGarbageTile(
+        context,
+        skin,
+        isMetal,
+        tileX,
+        tileY,
+        cellSize,
+        heat,
+      )
+      if (breaking) {
+        drawTileCracks(
+          context,
+          tileX,
+          tileY,
+          cellSize,
+          column + block.id,
+          0.45 + 0.4 * pulse,
         )
-        context.fillStyle = '#e8f2f7'
-        context.fill()
-        context.strokeStyle = 'rgba(66, 105, 130, 0.65)'
-        context.lineWidth = Math.max(1, cellSize * 0.025)
-        context.stroke()
-        context.beginPath()
-        context.moveTo(
-          centerX - cellSize * 0.035,
-          centerY + cellSize * 0.035,
-        )
-        context.lineTo(
-          centerX + cellSize * 0.035,
-          centerY - cellSize * 0.035,
-        )
-        context.stroke()
-      } else {
-        const markSize = cellSize * 0.11
-        context.beginPath()
-        context.moveTo(centerX, centerY - markSize)
-        context.lineTo(centerX + markSize, centerY)
-        context.lineTo(centerX, centerY + markSize)
-        context.lineTo(centerX - markSize, centerY)
-        context.closePath()
-        context.fillStyle = 'rgba(255, 246, 237, 0.64)'
-        context.fill()
-        context.strokeStyle = 'rgba(110, 78, 61, 0.28)'
-        context.lineWidth = Math.max(1, cellSize * 0.025)
-        context.stroke()
       }
     }
   }
 
-  if (block.state === 'converting') {
-    const conversionY = y + (block.height - 1) * cellSize
-    const conversionGlow = context.createLinearGradient(
-      x,
-      conversionY,
-      x,
-      conversionY + cellSize,
-    )
-    conversionGlow.addColorStop(0, 'rgba(174, 247, 218, 0.34)')
-    conversionGlow.addColorStop(1, 'rgba(63, 186, 135, 0.58)')
-    context.fillStyle = conversionGlow
-    context.fillRect(
-      bodyX,
-      conversionY + inset,
-      bodyWidth,
-      cellSize - inset * 2,
-    )
-    context.strokeStyle = 'rgba(63, 186, 135, 0.82)'
-    context.lineWidth = Math.max(2, cellSize * 0.045)
-    context.strokeRect(
-      bodyX + cellSize * 0.025,
-      conversionY + inset + cellSize * 0.025,
-      bodyWidth - cellSize * 0.05,
-      cellSize - inset * 2 - cellSize * 0.05,
-    )
-  }
-
   roundedRect(context, bodyX, bodyY, bodyWidth, bodyHeight, radius)
-  context.strokeStyle = isMetal
-    ? 'rgba(246, 252, 255, 0.9)'
-    : 'rgba(255, 248, 241, 0.82)'
-  context.lineWidth = Math.max(1.5, cellSize * 0.04)
+  context.strokeStyle = skin.rim
+  context.lineWidth = Math.max(1.5, cellSize * 0.035)
   context.stroke()
+
+  if (converting) {
+    // A hot seam runs along the row that is about to be handed over.
+    const seamY = y + conversionVisualRow * cellSize
+    context.save()
+    roundedRect(context, bodyX, bodyY, bodyWidth, bodyHeight, radius)
+    context.clip()
+    const seam = context.createLinearGradient(0, seamY, 0, seamY + cellSize)
+    seam.addColorStop(0, `rgba(255, 236, 196, ${0.1 + 0.16 * pulse})`)
+    seam.addColorStop(1, `rgba(255, 209, 92, ${0.3 + 0.32 * pulse})`)
+    context.fillStyle = seam
+    context.fillRect(x, seamY, width, cellSize)
+    context.restore()
+  }
 
   if (block.state === 'falling' && !reducedMotion) {
     context.strokeStyle = isMetal
@@ -979,6 +1024,7 @@ export function drawBoard(
       height,
       cellSize,
       options.reducedMotion,
+      state.elapsedMs,
     )
     if (squashing) context.restore()
   }
@@ -1069,6 +1115,24 @@ export function drawBoard(
         }
       }
 
+      // A cell handed over by a breaking garbage block: it bursts out of the
+      // slab rather than simply appearing where the tile used to be.
+      const revealAge =
+        panel.state === 'garbage-locked' && panel.animationStartedAt !== null
+          ? state.elapsedMs - panel.animationStartedAt
+          : null
+      const revealing =
+        revealAge !== null &&
+        revealAge >= 0 &&
+        revealAge < GARBAGE_REVEAL_MS &&
+        !options.reducedMotion
+      const revealProgress = revealing
+        ? (revealAge as number) / GARBAGE_REVEAL_MS
+        : 1
+      if (revealing) {
+        popScale *= 0.74 + 0.26 * revealProgress ** 0.5
+      }
+
       if (alpha !== 1) context.globalAlpha = alpha
       if (popScale !== 1) {
         context.save()
@@ -1092,6 +1156,50 @@ export function drawBoard(
         x,
         y,
       )
+      if (revealing) {
+        // Flash fading off the new panel, plus the shell of the tile it broke
+        // out of expanding away.
+        const fade = 1 - revealProgress
+        context.save()
+        roundedRect(
+          context,
+          x + cellSize * 0.075,
+          y + cellSize * 0.075,
+          cellSize * 0.85,
+          cellSize * 0.85,
+          cellSize * 0.26,
+        )
+        context.fillStyle = `rgba(255, 252, 246, ${0.8 * fade})`
+        context.fill()
+
+        const shell = cellSize * (0.5 + revealProgress * 0.34)
+        context.beginPath()
+        context.rect(
+          x + cellSize / 2 - shell,
+          y + cellSize / 2 - shell,
+          shell * 2,
+          shell * 2,
+        )
+        context.strokeStyle = `rgba(255, 209, 92, ${0.7 * fade})`
+        context.lineWidth = Math.max(1.5, cellSize * 0.05 * fade)
+        context.stroke()
+        context.restore()
+      } else if (panel.state === 'garbage-locked') {
+        // Still owned by the block until the whole row is released.
+        context.save()
+        roundedRect(
+          context,
+          x + cellSize * 0.075,
+          y + cellSize * 0.075,
+          cellSize * 0.85,
+          cellSize * 0.85,
+          cellSize * 0.26,
+        )
+        context.fillStyle = 'rgba(255, 250, 245, 0.22)'
+        context.fill()
+        context.restore()
+      }
+
       if (landingSquash > 0) context.restore()
       if (popScale !== 1) context.restore()
       if (alpha !== 1) context.globalAlpha = 1

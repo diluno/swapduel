@@ -305,7 +305,8 @@ export function isSimulationState(
     (value.garbageConversion === null ||
       isGarbageConversion(value.garbageConversion)) &&
     isInteger(value.totalCleared) &&
-    isInteger(value.lastClearSize)
+    isInteger(value.lastClearSize) &&
+    isInteger(value.score)
   )
 }
 

@@ -20,6 +20,11 @@ export {
 export { findMatches, hasMatches } from './matches'
 export { nextRandom, randomInteger, seedToRandomState } from './random'
 export {
+  chainScoreBonus,
+  clearScore,
+  comboScoreBonus,
+} from './scoring'
+export {
   isSimulationState,
   restoreSimulationSnapshot,
   serializeSimulationSnapshot,
@@ -59,6 +64,8 @@ export {
   type ResolutionPhase,
   type RiseConfig,
   type RoundStatus,
+  type ScoreTableEntry,
+  type ScoringConfig,
   type SimulationState,
   type SwapAction,
   type SwapResult,
