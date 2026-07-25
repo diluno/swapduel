@@ -59,60 +59,61 @@ export const defaultGameConfig: GameConfig = {
         maximum: 5,
         blocks: [{ width: 4, height: 1, type: 'normal' }],
       },
-      // Six panels is the first combo that spans the opponent's whole board,
-      // and everything past it stacks a full-width slab with a narrower one on
-      // top. The narrow block is placed in a random column, so a big combo
-      // lands as a staggered wall rather than a neat rectangle.
+      // The width climbs one panel at a time, so a full-width row is a
+      // seven-panel combo rather than a six. Combo garbage stays one row tall
+      // at every size — height is what chains buy, and conflating the two is
+      // what made trading combos escalate faster than either player could dig.
+      // Past a full row the payout splits into two blocks, each placed in its
+      // own random column, so a big combo lands staggered rather than as a
+      // neat rectangle.
       {
         minimum: 6,
         maximum: 6,
-        blocks: [{ width: 6, height: 1, type: 'normal' }],
+        blocks: [{ width: 5, height: 1, type: 'normal' }],
       },
       {
         minimum: 7,
         maximum: 7,
-        blocks: [
-          { width: 6, height: 1, type: 'normal' },
-          { width: 3, height: 1, type: 'normal' },
-        ],
+        blocks: [{ width: 6, height: 1, type: 'normal' }],
       },
       {
         minimum: 8,
         maximum: 8,
         blocks: [
-          { width: 6, height: 1, type: 'normal' },
           { width: 4, height: 1, type: 'normal' },
+          { width: 3, height: 1, type: 'normal' },
         ],
       },
       {
         minimum: 9,
         maximum: 9,
         blocks: [
-          { width: 6, height: 1, type: 'normal' },
-          { width: 5, height: 1, type: 'normal' },
+          { width: 4, height: 1, type: 'normal' },
+          { width: 4, height: 1, type: 'normal' },
         ],
       },
       {
         minimum: 10,
         maximum: 10,
         blocks: [
-          { width: 6, height: 1, type: 'normal' },
-          { width: 6, height: 1, type: 'normal' },
+          { width: 5, height: 1, type: 'normal' },
+          { width: 5, height: 1, type: 'normal' },
         ],
       },
-      // A two-high slab is the same twelve cells as the pair above but far
-      // nastier to dig out, so it reads as the step up rather than a repeat.
       {
         minimum: 11,
         maximum: 11,
-        blocks: [{ width: 6, height: 2, type: 'normal' }],
+        blocks: [
+          { width: 6, height: 1, type: 'normal' },
+          { width: 5, height: 1, type: 'normal' },
+        ],
       },
       {
         minimum: 12,
         maximum: null,
         blocks: [
-          { width: 6, height: 2, type: 'normal' },
-          { width: 3, height: 1, type: 'normal' },
+          { width: 6, height: 1, type: 'normal' },
+          { width: 6, height: 1, type: 'normal' },
         ],
       },
     ],

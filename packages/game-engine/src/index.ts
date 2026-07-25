@@ -4,6 +4,7 @@ export {
   shockAttackBlocks,
 } from './attacks'
 export { createEmptyBoard, createInitialBoard, generateIncomingRow, insertIncomingRow } from './board'
+export { cancelIncomingGarbage } from './cancellation'
 export { defaultGameConfig, timeTrialDurationMs } from './config'
 export { advanceDangerState, boardTouchesTop } from './danger'
 export { applyGravity, isBoardStable } from './gravity'

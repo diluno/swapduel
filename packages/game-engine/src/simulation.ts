@@ -3,6 +3,7 @@ import {
   comboAttackBlocks,
   shockAttackBlocks,
 } from './attacks'
+import { cancelIncomingGarbage } from './cancellation'
 import {
   availableTypes,
   createInitialBoard,
@@ -242,7 +243,6 @@ function beginMatchResolution(
       : state.board
   const outgoingAttacks = [...state.outgoingAttacks]
   let nextAttackSequence = state.nextAttackSequence
-  const firstNewAttackSequence = nextAttackSequence
   nextAttackSequence = appendAttack(
     outgoingAttacks,
     nextAttackSequence,
@@ -272,9 +272,15 @@ function beginMatchResolution(
       chainAttackBlocks(chain.level, state.board.columns),
     )
   }
-  const attackSequences = Array.from(
-    { length: nextAttackSequence - firstNewAttackSequence },
-    (_, index) => firstNewAttackSequence + index,
+  // Everything queued this clear is first spent on defence: garbage that has
+  // been telegraphed but not landed is reduced before the remainder is sent.
+  const cancellation = cancelIncomingGarbage(
+    state.incomingGarbage,
+    outgoingAttacks.splice(state.outgoingAttacks.length),
+  )
+  outgoingAttacks.push(...cancellation.attacks)
+  const attackSequences = cancellation.attacks.map(
+    ({ sequence }) => sequence,
   )
   const comboStopMs =
     normalSize < 4
@@ -331,6 +337,7 @@ function beginMatchResolution(
         ? state.nextChainId + 1
         : state.nextChainId,
     outgoingAttacks,
+    incomingGarbage: cancellation.incomingGarbage,
     nextAttackSequence,
     stopTimeRemainingMs,
     score,

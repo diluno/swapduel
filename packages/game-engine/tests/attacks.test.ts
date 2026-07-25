@@ -15,41 +15,41 @@ describe('data-driven attack tables', () => {
     [3, []],
     [4, [{ width: 3, height: 1, type: 'normal' }]],
     [5, [{ width: 4, height: 1, type: 'normal' }]],
-    [6, [{ width: 6, height: 1, type: 'normal' }]],
-    [
-      7,
-      [
-        { width: 6, height: 1, type: 'normal' },
-        { width: 3, height: 1, type: 'normal' },
-      ],
-    ],
+    [6, [{ width: 5, height: 1, type: 'normal' }]],
+    [7, [{ width: 6, height: 1, type: 'normal' }]],
     [
       8,
       [
-        { width: 6, height: 1, type: 'normal' },
         { width: 4, height: 1, type: 'normal' },
+        { width: 3, height: 1, type: 'normal' },
       ],
     ],
     [
       10,
       [
-        { width: 6, height: 1, type: 'normal' },
-        { width: 6, height: 1, type: 'normal' },
+        { width: 5, height: 1, type: 'normal' },
+        { width: 5, height: 1, type: 'normal' },
       ],
     ],
-    [11, [{ width: 6, height: 2, type: 'normal' }]],
+    [
+      11,
+      [
+        { width: 6, height: 1, type: 'normal' },
+        { width: 5, height: 1, type: 'normal' },
+      ],
+    ],
     [
       12,
       [
-        { width: 6, height: 2, type: 'normal' },
-        { width: 3, height: 1, type: 'normal' },
+        { width: 6, height: 1, type: 'normal' },
+        { width: 6, height: 1, type: 'normal' },
       ],
     ],
     [
       20,
       [
-        { width: 6, height: 2, type: 'normal' },
-        { width: 3, height: 1, type: 'normal' },
+        { width: 6, height: 1, type: 'normal' },
+        { width: 6, height: 1, type: 'normal' },
       ],
     ],
   ] as const)(
