@@ -10,6 +10,16 @@ const {
   joinRoom,
   getSavedDisplayName,
 } = useRoomSocket()
+const { entries: leaderboardEntries, load: loadLeaderboard } =
+  useLeaderboard()
+
+/**
+ * The board only earns its space once somebody is on it, so an empty table —
+ * or a leaderboard that is down — shows nothing at all rather than putting an
+ * error or an empty frame on the front door. Ten is what fits without pushing
+ * the join-a-friend form below the fold on a phone.
+ */
+const topRuns = computed(() => leaderboardEntries.value.slice(0, 10))
 
 useHead({
   title: 'Swapduel',
@@ -23,6 +33,9 @@ useHead({
 
 onMounted(() => {
   playerName.value = getSavedDisplayName()
+  // The page is prerendered, so this is a client-side fetch on arrival. It is
+  // deliberately not awaited: the menu must be usable while it resolves.
+  void loadLeaderboard()
 })
 
 async function createPrivateMatch(): Promise<void> {
@@ -123,6 +136,17 @@ async function joinPrivateMatch(): Promise<void> {
         No account needed. Create a room, share its six-character code, and
         challenge one friend.
       </p>
+
+      <section v-if="topRuns.length > 0" class="standings">
+        <h2>Time trial — top runs</h2>
+        <ol class="leaderboard">
+          <li v-for="(entry, index) in topRuns" :key="entry.entryId">
+            <span class="rank">{{ index + 1 }}</span>
+            <span class="name">{{ entry.displayName }}</span>
+            <span class="points">{{ entry.score.toLocaleString() }}</span>
+          </li>
+        </ol>
+      </section>
 
       <NuxtLink v-if="isDevelopment" class="lab-link" to="/lab">
         <Icon name="solar:test-tube-bold" />
@@ -343,6 +367,61 @@ h1 {
   color: #bc8e72;
   font-size: 0.78rem;
   font-weight: 800;
+}
+
+.standings {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid rgba(201, 155, 130, 0.24);
+}
+
+.standings h2 {
+  margin: 0;
+  color: #c99b82;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.leaderboard {
+  display: grid;
+  gap: 2px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.leaderboard li {
+  display: grid;
+  grid-template-columns: 1.6rem minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 5px 10px;
+  border-radius: 12px;
+  color: #7a6557;
+  font-size: 0.84rem;
+  text-align: left;
+}
+
+.leaderboard li:nth-child(odd) {
+  background: rgba(255, 244, 236, 0.85);
+}
+
+.leaderboard .rank {
+  color: #c99b82;
+  font-variant-numeric: tabular-nums;
+}
+
+.leaderboard .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.leaderboard .points {
+  font-family: "Fredoka", sans-serif;
+  font-variant-numeric: tabular-nums;
 }
 
 .decor-panel {
