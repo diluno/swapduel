@@ -5,17 +5,24 @@ Engine references are in `packages/game-engine/src/`.
 
 ## 1. The big one: swap while things are falling
 
-### 1.1 Swap during resolution
+### 1.1 Swap during resolution — ✅ done
 
-The engine uses a board-wide phase machine — any clear anywhere freezes the
-whole board, and `panelCanSwap` requires idle state (`simulation.ts:53`).
-In Panel de Pon, panels resolve independently and you can keep swapping while
-other panels flash, pop, and fall. That freedom is the basis of advanced play
-(setting up the next chain link *during* the current pop) and is the single
-largest gap between "matching game" and "Panel de Pon."
+The board-wide phase machine is gone. Clears are now independent `ClearGroup`s
+(`simulation.ts`), each running its own flash/pop clock, and gravity is
+per-panel: an unsupported panel starts its own hover timer and drops on it.
+`phase` survives only as a derived summary for the renderer, danger clock and
+rise gate — no resolution logic branches on it.
 
-Requires moving from `phase: ResolutionPhase` on the board to per-panel
-timers. Big refactor, biggest payoff.
+Consequences worth knowing:
+- A match made while an older clear is still popping resolves alongside it.
+- The chain counter is board-global, so an unrelated match during a live chain
+  neither extends nor destroys it; it scores as a fresh level-1 clear.
+- Garbage conversion starts when the clear that cracked it finishes, and a
+  second cracked block queues behind the one already converting.
+
+Rise still pauses while the board is busy. Letting the stack keep climbing
+through a clear (as the SNES does, which is what stop time is *for*) is a
+difficulty change, not a plumbing one — left alone deliberately.
 
 ## 2. High-impact, moderate effort
 
@@ -81,5 +88,5 @@ stagger is the signature of the original.
 ## Top three picks
 
 1. ~~**2.1** Garbage telegraph queue (contained change)~~ — done
-2. **1.1** Swap-during-resolution (deep refactor)
+2. ~~**1.1** Swap-during-resolution (deep refactor)~~ — done
 3. ~~**3.2 + 3.1** Landing shake + panic audio (contained change)~~ — done

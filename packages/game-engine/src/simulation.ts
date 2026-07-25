@@ -15,6 +15,7 @@ import {
   garbageAt,
   garbageBlockCanFall,
   garbageBlocksTouchedByClear,
+  garbageOccupiesCell,
   placeNextGarbageBlock,
 } from './garbage'
 import { applyGravity, isBoardStable } from './gravity'
@@ -24,6 +25,7 @@ import { clearScore } from './scoring'
 import type {
   Board,
   Coordinate,
+  ResolutionPhase,
   GameConfig,
   OutgoingAttack,
   Panel,
@@ -129,32 +131,55 @@ function appendAttack(
 function beginGarbageConversion(
   state: SimulationState,
   blockIds: number[],
+  config: GameConfig,
 ): Pick<SimulationState, 'garbage' | 'garbageConversion'> {
-  const activeBlockId = blockIds[0]
+  const ids = blockIds.filter((id) =>
+    state.garbage.some((block) => block.id === id),
+  )
+  const activeBlockId = ids[0]
   if (activeBlockId === undefined) {
     return {
       garbage: state.garbage,
-      garbageConversion: null,
+      garbageConversion: state.garbageConversion,
+    }
+  }
+
+  const garbage = state.garbage.map((block) =>
+    ids.includes(block.id)
+      ? {
+          ...block,
+          state: 'converting' as const,
+          conversionRow: block.row,
+          fallProgress: 0,
+        }
+      : block,
+  )
+
+  // Only one block converts at a time. A second clear cracking more garbage
+  // while the first is still turning into panels queues up behind it instead
+  // of restarting the whole conversion.
+  const running = state.garbageConversion
+  if (running !== null) {
+    return {
+      garbage,
+      garbageConversion: {
+        ...running,
+        blockIds: [
+          ...running.blockIds,
+          ...ids.filter((id) => !running.blockIds.includes(id)),
+        ],
+      },
     }
   }
 
   return {
-    garbage: state.garbage.map((block) =>
-      blockIds.includes(block.id)
-        ? {
-            ...block,
-            state: 'converting',
-            conversionRow: block.row,
-            fallProgress: 0,
-          }
-        : block,
-    ),
+    garbage,
     garbageConversion: {
-      blockIds,
+      blockIds: ids,
       activeBlockId,
       nextColumn: 0,
       convertedPanelIds: [],
-      nextCellAt: 0,
+      nextCellAt: state.elapsedMs + config.timing.garbageCellConvertMs,
       releaseAt: null,
     },
   }
@@ -181,6 +206,16 @@ function beginMatchResolution(
       (panel) =>
         panel.chainEligible && panel.chainId === previousChain.id,
     )
+  // Now that clears overlap, a plain match can land while a chain is still in
+  // flight. The chain counter belongs to the board, not to one clear, so an
+  // unrelated match neither extends it nor tears it down — it just scores as a
+  // fresh level-1 clear and leaves the chain to expire on its own clock.
+  // 'active' means the board has not settled since the chain's last link, so
+  // the chain is genuinely still running. A chain that is merely *closing* has
+  // already had its board settle, and an unrelated clear there still starts a
+  // fresh origin the way it always did.
+  const chainIsLive =
+    previousChain !== null && previousChain.status === 'active'
   const chain =
     previousChain !== null && qualifiedForChain
       ? {
@@ -190,16 +225,19 @@ function beginMatchResolution(
           closingStartedAt: null,
           status: 'active' as const,
         }
-      : {
-          id: state.nextChainId,
-          level: 1,
-          startedAt: state.elapsedMs,
-          lastQualifyingEventAt: state.elapsedMs,
-          closingStartedAt: null,
-          status: 'active' as const,
-        }
+      : previousChain !== null && chainIsLive
+        ? previousChain
+        : {
+            id: state.nextChainId,
+            level: 1,
+            startedAt: state.elapsedMs,
+            lastQualifyingEventAt: state.elapsedMs,
+            closingStartedAt: null,
+            status: 'active' as const,
+          }
+  const clearChainLevel = qualifiedForChain ? chain.level : 1
   const baseBoard =
-    previousChain !== null && !qualifiedForChain
+    previousChain !== null && !qualifiedForChain && !chainIsLive
       ? clearChainMetadata(state.board)
       : state.board
   const outgoingAttacks = [...state.outgoingAttacks]
@@ -211,7 +249,7 @@ function beginMatchResolution(
     'combo',
     state,
     normalSize,
-    chain.level,
+    clearChainLevel,
     comboAttackBlocks(normalSize, config),
   )
   nextAttackSequence = appendAttack(
@@ -220,7 +258,7 @@ function beginMatchResolution(
     'shock',
     state,
     shockSize,
-    chain.level,
+    clearChainLevel,
     shockAttackBlocks(shockSize, config),
   )
   if (qualifiedForChain) {
@@ -238,11 +276,6 @@ function beginMatchResolution(
     { length: nextAttackSequence - firstNewAttackSequence },
     (_, index) => firstNewAttackSequence + index,
   )
-  const touchedGarbageIds = garbageBlocksTouchedByClear(
-    state.garbage,
-    matches,
-  )
-  const conversion = beginGarbageConversion(state, touchedGarbageIds)
   const comboStopMs =
     normalSize < 4
       ? 0
@@ -263,7 +296,7 @@ function beginMatchResolution(
       {
         size: matchedPanelIds.length,
         normalSize,
-        chainLevel: chain.level,
+        chainLevel: clearChainLevel,
         qualifiedForChain,
       },
       config,
@@ -277,25 +310,35 @@ function beginMatchResolution(
       chainId: chain.id,
       animationStartedAt: state.elapsedMs,
     })),
-    phase: 'flashing',
-    phaseStartedAt: state.elapsedMs,
-    matchedPanelIds,
+    clears: [
+      ...state.clears,
+      {
+        id: state.nextClearId,
+        panelIds: matchedPanelIds,
+        chainId: chain.id,
+        garbageBlockIds: garbageBlocksTouchedByClear(
+          state.garbage,
+          matches,
+        ),
+        phase: 'flashing',
+        phaseStartedAt: state.elapsedMs,
+      },
+    ],
+    nextClearId: state.nextClearId + 1,
     chain,
     nextChainId:
-      qualifiedForChain && previousChain !== null
-        ? state.nextChainId
-        : state.nextChainId + 1,
+      chain.id === state.nextChainId
+        ? state.nextChainId + 1
+        : state.nextChainId,
     outgoingAttacks,
     nextAttackSequence,
-    garbage: conversion.garbage,
-    garbageConversion: conversion.garbageConversion,
     stopTimeRemainingMs,
     score,
     lastClearEvent: {
       size: matchedPanelIds.length,
       normalSize,
       shockSize,
-      chainLevel: chain.level,
+      chainLevel: clearChainLevel,
       qualifiedForChain,
       touchedTop: matchedPanels.some(
         (panel) => panel.row === state.board.visibleRows - 1,
@@ -307,12 +350,98 @@ function beginMatchResolution(
   }
 }
 
+/**
+ * Runs every clear group on its own clock. Groups do not wait for each other,
+ * so a match made while an older one is still popping resolves alongside it.
+ */
+function advanceClearGroups(
+  state: SimulationState,
+  config: GameConfig,
+): SimulationState {
+  if (state.clears.length === 0) {
+    return state
+  }
+
+  let board = state.board
+  let garbage = state.garbage
+  let garbageConversion = state.garbageConversion
+  let totalCleared = state.totalCleared
+  const clears: SimulationState['clears'] = []
+  let changed = false
+
+  for (const group of state.clears) {
+    const elapsed = state.elapsedMs - group.phaseStartedAt
+
+    if (group.phase === 'flashing') {
+      if (elapsed < config.timing.matchFlashDurationMs) {
+        clears.push(group)
+        continue
+      }
+
+      board = withPanelsById(board, new Set(group.panelIds), (panel) => ({
+        ...panel,
+        state: 'clearing',
+        animationStartedAt: state.elapsedMs,
+      }))
+      clears.push({
+        ...group,
+        phase: 'clearing',
+        phaseStartedAt: state.elapsedMs,
+      })
+      changed = true
+      continue
+    }
+
+    if (
+      elapsed < clearPhaseDurationMs(group.panelIds.length, config)
+    ) {
+      clears.push(group)
+      continue
+    }
+
+    const idSet = new Set(group.panelIds)
+    board = {
+      ...board,
+      cells: board.cells.map((row) =>
+        row.map((panel) =>
+          panel !== null && idSet.has(panel.id) ? null : panel,
+        ),
+      ),
+    }
+    totalCleared += group.panelIds.length
+
+    if (group.garbageBlockIds.length > 0) {
+      const conversion = beginGarbageConversion(
+        { ...state, garbage, garbageConversion },
+        group.garbageBlockIds,
+        config,
+      )
+      garbage = conversion.garbage
+      garbageConversion = conversion.garbageConversion
+    }
+    changed = true
+  }
+
+  if (!changed) {
+    return state
+  }
+
+  return {
+    ...state,
+    board,
+    garbage,
+    garbageConversion,
+    clears,
+    totalCleared,
+  }
+}
+
 function advanceGarbageConversion(
   state: SimulationState,
   config: GameConfig,
 ): SimulationState {
   const conversion = state.garbageConversion
-  if (state.phase !== 'garbage-converting' || conversion === null) {
+  if (conversion === null) {
     return state
   }
 
@@ -320,12 +449,7 @@ function advanceGarbageConversion(
     ({ id }) => id === conversion.activeBlockId,
   )
   if (block === undefined) {
-    return {
-      ...state,
-      phase: 'fall-delay',
-      phaseStartedAt: state.elapsedMs,
-      garbageConversion: null,
-    }
+    return { ...state, garbageConversion: null }
   }
 
   if (
@@ -369,8 +493,6 @@ function advanceGarbageConversion(
         board,
         garbage,
         garbageConversion: null,
-        phase: 'fall-delay',
-        phaseStartedAt: state.elapsedMs,
       }
     }
 
@@ -505,152 +627,181 @@ function completePendingSwap(state: SimulationState): SimulationState {
   }
 }
 
+/** Panels that gravity is allowed to pick up. Everything else holds its cell. */
+function panelIsMovable(panel: Panel): boolean {
+  return panel.state === 'idle' || panel.state === 'hovering'
+}
+
+/**
+ * Per-panel gravity. Each unsupported panel starts its own hover timer and
+ * drops when that timer runs out, so one column falling never stops the player
+ * working in another — and panels held up by a clear elsewhere wait for it
+ * without freezing the board.
+ */
+function advancePanelGravity(
+  state: SimulationState,
+  config: GameConfig,
+): SimulationState {
+  const cells = cloneCells(state.board)
+  const rowCount = state.board.visibleRows
+  const activeChainId = state.chain?.id ?? null
+  let changed = false
+
+  for (let column = 0; column < state.board.columns; column += 1) {
+    // The lowest row this column can still drop a panel into.
+    let landing = 0
+
+    for (let row = 0; row < rowCount; row += 1) {
+      if (
+        state.garbage.some((block) =>
+          garbageOccupiesCell(block, row, column),
+        )
+      ) {
+        landing = row + 1
+        continue
+      }
+
+      const panel = cells[row]?.[column] ?? null
+      if (panel === null) {
+        continue
+      }
+
+      if (!panelIsMovable(panel)) {
+        landing = row + 1
+        continue
+      }
+
+      if (row === landing) {
+        if (panel.state === 'hovering') {
+          // The gap underneath closed while it hung there.
+          cells[row]![column] = {
+            ...panel,
+            state: 'idle',
+            animationStartedAt: null,
+          }
+          changed = true
+        }
+        landing = row + 1
+        continue
+      }
+
+      if (panel.state === 'idle') {
+        cells[row]![column] = {
+          ...panel,
+          state: 'hovering',
+          animationStartedAt: state.elapsedMs,
+        }
+        changed = true
+        landing = row + 1
+        continue
+      }
+
+      const hoveringSince = panel.animationStartedAt ?? state.elapsedMs
+      if (state.elapsedMs - hoveringSince < config.timing.fallDelayMs) {
+        landing = row + 1
+        continue
+      }
+
+      cells[landing]![column] = {
+        ...panel,
+        row: landing,
+        state: 'idle',
+        offsetY: 0,
+        animationStartedAt: null,
+        chainEligible: activeChainId !== null,
+        chainId: activeChainId,
+      }
+      cells[row]![column] = null
+      changed = true
+      landing += 1
+    }
+  }
+
+  if (!changed) {
+    return state
+  }
+
+  return { ...state, board: { ...state.board, cells } }
+}
+
 function advanceResolution(
   state: SimulationState,
   config: GameConfig,
 ): SimulationState {
-  const phaseElapsed = state.elapsedMs - state.phaseStartedAt
+  let next = advanceClearGroups(state, config)
+  next = advanceGarbageConversion(next, config)
+  next = advancePanelGravity(next, config)
 
-  if (state.phase === 'idle') {
-    if (state.pendingSwap !== null) {
-      return state
-    }
-    const matches = findMatches(state.board, state.garbage)
-    if (matches.length > 0) {
-      return beginMatchResolution(state, matches, config)
-    }
-    if (!isBoardStable(state.board, state.garbage)) {
-      return {
-        ...state,
-        phase: 'fall-delay',
-        phaseStartedAt: state.elapsedMs,
-      }
-    }
+  // Only settled panels can match (see findMatches), so this picks up exactly
+  // the matches that have just come to rest — including ones the player made
+  // while another clear was still resolving.
+  const matches = findMatches(next.board, next.garbage)
+  return matches.length > 0
+    ? beginMatchResolution(next, matches, config)
+    : next
+}
+
+/**
+ * Collapses everything happening on the board into the single `phase` label
+ * the renderer, danger clock and rise gate read. It is a report, not a
+ * controller: no resolution logic branches on it.
+ */
+function summarizePhase(state: SimulationState): ResolutionPhase {
+  if (state.garbageConversion !== null) return 'garbage-converting'
+  if (state.garbage.some(({ state: block }) => block === 'falling')) {
+    return 'garbage-falling'
+  }
+  if (state.clears.some(({ phase }) => phase === 'clearing')) {
+    return 'clearing'
+  }
+  if (state.clears.length > 0) return 'flashing'
+  if (!isBoardStable(state.board, state.garbage)) return 'fall-delay'
+  return 'idle'
+}
+
+function syncPhaseSummary(state: SimulationState): SimulationState {
+  const phase = summarizePhase(state)
+  const matchedPanelIds = state.clears.flatMap(({ panelIds }) => panelIds)
+
+  if (
+    phase === state.phase &&
+    matchedPanelIds.length === state.matchedPanelIds.length &&
+    matchedPanelIds.every((id, index) => state.matchedPanelIds[index] === id)
+  ) {
     return state
   }
 
-  if (state.phase === 'garbage-converting') {
-    return advanceGarbageConversion(state, config)
+  return {
+    ...state,
+    phase,
+    phaseStartedAt:
+      phase === state.phase ? state.phaseStartedAt : state.elapsedMs,
+    matchedPanelIds,
   }
-
-  if (state.phase === 'garbage-falling') {
-    return state
-  }
-
-  const idSet = new Set(state.matchedPanelIds)
-
-  if (
-    state.phase === 'flashing' &&
-    phaseElapsed >= config.timing.matchFlashDurationMs
-  ) {
-    return {
-      ...state,
-      board: withPanelsById(state.board, idSet, (panel) => ({
-        ...panel,
-        state: 'clearing',
-        animationStartedAt: state.elapsedMs,
-      })),
-      phase: 'clearing',
-      phaseStartedAt: state.elapsedMs,
-    }
-  }
-
-  // Panels pop one at a time rather than all at once, so the clear lasts until
-  // the last one has had its own fade. Keeping this in the simulation (instead
-  // of faking the stagger in the renderer) means both clients agree on when the
-  // board comes back to life, and a bigger match genuinely takes longer to
-  // resolve — as it does on the SNES.
-  if (
-    state.phase === 'clearing' &&
-    phaseElapsed >= clearPhaseDurationMs(state.matchedPanelIds.length, config)
-  ) {
-    const cells = state.board.cells.map((row) =>
-      row.map((panel) =>
-        panel !== null && idSet.has(panel.id) ? null : panel,
-      ),
-    )
-
-    const garbageConversion =
-      state.garbageConversion === null
-        ? null
-        : {
-            ...state.garbageConversion,
-            nextCellAt:
-              state.elapsedMs + config.timing.garbageCellConvertMs,
-          }
-
-    return {
-      ...state,
-      board: { ...state.board, cells },
-      phase:
-        garbageConversion === null
-          ? 'fall-delay'
-          : 'garbage-converting',
-      phaseStartedAt: state.elapsedMs,
-      garbageConversion,
-      totalCleared: state.totalCleared + state.matchedPanelIds.length,
-    }
-  }
-
-  if (
-    state.phase === 'fall-delay' &&
-    phaseElapsed >= config.timing.fallDelayMs
-  ) {
-    const gravity = applyGravity(state.board, state.garbage)
-    const movedPanelIds = new Set(gravity.movedPanelIds)
-    const activeChainId = state.chain?.id ?? null
-    const stableState: SimulationState = {
-      ...state,
-      board: {
-        ...gravity.board,
-        cells: gravity.board.cells.map((row) =>
-          row.map((panel) =>
-            panel === null
-              ? null
-              : {
-                  ...panel,
-                  offsetY: 0,
-                  state: 'idle',
-                  chainEligible: movedPanelIds.has(panel.id)
-                    ? activeChainId !== null
-                    : panel.chainEligible,
-                  chainId: movedPanelIds.has(panel.id)
-                    ? activeChainId
-                    : panel.chainId,
-                  animationStartedAt: null,
-                },
-          ),
-        ),
-      },
-      phase: 'idle',
-      phaseStartedAt: state.elapsedMs,
-      matchedPanelIds: [],
-    }
-    const matches = findMatches(stableState.board, stableState.garbage)
-    if (matches.length > 0) {
-      return beginMatchResolution(stableState, matches, config)
-    }
-
-    return {
-      ...stableState,
-      chain:
-        stableState.chain === null
-          ? null
-          : {
-              ...stableState.chain,
-              status: 'closing',
-              closingStartedAt: stableState.elapsedMs,
-            },
-    }
-  }
-
-  return state
 }
 
 function advanceChainClosure(
   state: SimulationState,
   config: GameConfig,
 ): SimulationState {
+  // The board coming to rest is what ends a chain: from here it has one
+  // window left in which a falling panel can still land a further link.
+  if (
+    state.chain !== null &&
+    state.chain.status === 'active' &&
+    state.phase === 'idle' &&
+    state.pendingSwap === null
+  ) {
+    return {
+      ...state,
+      chain: {
+        ...state.chain,
+        status: 'closing',
+        closingStartedAt: state.elapsedMs,
+      },
+    }
+  }
+
   if (
     state.chain === null ||
     state.chain.status !== 'closing' ||
@@ -679,22 +830,9 @@ function advanceGarbageLifecycle(
 ): SimulationState {
   const advanced = advanceFallingGarbage(state, config)
 
-  if (state.phase === 'garbage-falling') {
-    return advanced.garbage.some(
-      ({ state: blockState }) => blockState === 'falling',
-    )
-      ? advanced
-      : {
-          ...advanced,
-          phase: 'fall-delay',
-          phaseStartedAt: advanced.elapsedMs,
-        }
-  }
-
   if (
-    advanced.phase === 'idle' &&
-    advanced.pendingSwap === null &&
-    advanced.garbageConversion === null
+    advanced.garbageConversion === null &&
+    advanced.pendingSwap === null
   ) {
     const unsupportedIds = new Set(
       advanced.garbage
@@ -718,8 +856,6 @@ function advanceGarbageLifecycle(
             ? { ...block, state: 'falling', fallProgress: 0 }
             : block,
         ),
-        phase: 'garbage-falling',
-        phaseStartedAt: advanced.elapsedMs,
       }
     }
   }
@@ -745,12 +881,7 @@ function advanceGarbageLifecycle(
     return advanced
   }
 
-  const placed = placeNextGarbageBlock(advanced)
-  return {
-    ...placed,
-    phase: 'garbage-falling',
-    phaseStartedAt: placed.elapsedMs,
-  }
+  return placeNextGarbageBlock(advanced)
 }
 
 function advanceRise(
@@ -871,8 +1002,10 @@ function fixedStep(
   }
 
   nextState = advanceResolution(nextState, config)
+  nextState = syncPhaseSummary(nextState)
   nextState = advanceChainClosure(nextState, config)
   nextState = advanceGarbageLifecycle(nextState, config)
+  nextState = syncPhaseSummary(nextState)
   nextState = advanceDangerState(nextState, config)
   nextState = advanceRise(nextState, config)
   return nextState
@@ -901,6 +1034,8 @@ export function createSimulation(
     phase: 'idle',
     phaseStartedAt: 0,
     matchedPanelIds: [],
+    clears: [],
+    nextClearId: 1,
     pendingSwap: null,
     chain: null,
     nextChainId: 1,
@@ -1101,6 +1236,12 @@ export function simulationChecksum(state: SimulationState): string {
     state.status,
     state.phase,
     state.phaseStartedAt.toFixed(4),
+    state.clears
+      .map(
+        (group) =>
+          `${group.id},${group.phase},${group.phaseStartedAt.toFixed(4)},${group.chainId},${group.panelIds.join('.')}`,
+      )
+      .join('|'),
     state.pendingSwap === null
       ? 'no-swap'
       : `${state.pendingSwap.from.row},${state.pendingSwap.from.column}>${state.pendingSwap.to.row},${state.pendingSwap.to.column}@${state.pendingSwap.startedAt}`,

@@ -727,19 +727,29 @@ function drawComboEffect(
 }
 
 // Panels of a clear pop one at a time, top row first and left to right within
-// a row — the reading order the SNES uses. The engine holds the board for
+// a row — the reading order the SNES uses. The engine holds each group for
 // exactly this long (see clearPhaseDurationMs), so the stagger is real rather
-// than a renderer illusion.
+// than a renderer illusion. Groups are counted separately: two clears running
+// side by side each start their own stagger from one.
 function popOrder(state: SimulationState): Map<number, number> {
-  const matchedIds = new Set(state.matchedPanelIds)
-  const matched: { id: number; row: number; column: number }[] = []
+  const byId = new Map<number, { id: number; row: number; column: number }>()
   for (const row of state.board.cells) {
     for (const panel of row) {
-      if (panel !== null && matchedIds.has(panel.id)) matched.push(panel)
+      if (panel !== null) byId.set(panel.id, panel)
     }
   }
-  matched.sort((a, b) => b.row - a.row || a.column - b.column)
-  return new Map(matched.map((panel, index) => [panel.id, index]))
+
+  const order = new Map<number, number>()
+  for (const group of state.clears) {
+    const matched = group.panelIds
+      .map((id) => byId.get(id))
+      .filter((panel): panel is { id: number; row: number; column: number } =>
+        panel !== undefined,
+      )
+      .sort((a, b) => b.row - a.row || a.column - b.column)
+    matched.forEach((panel, index) => order.set(panel.id, index))
+  }
+  return order
 }
 
 // The board goes redder and breathes faster the closer the stack gets to the
@@ -1043,10 +1053,7 @@ export function drawBoard(
     context.globalAlpha = 1
   }
 
-  const popIndexes =
-    state.phase === 'clearing' && state.matchedPanelIds.length > 0
-      ? popOrder(state)
-      : null
+  const popIndexes = state.clears.length > 0 ? popOrder(state) : null
 
   for (const row of state.board.cells) {
     for (const panel of row) {

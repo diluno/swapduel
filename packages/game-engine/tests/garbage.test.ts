@@ -293,7 +293,12 @@ describe('garbage conversion', () => {
         garbageBlock({ id: 2, column: 3, width: 3 }),
       ],
     }
-    const converting = stepSimulation(state)
+    // Conversion starts once the clear that cracked the blocks has finished
+    // popping, so wait for it rather than reading it on the first step.
+    const converting = advanceUntil(
+      stepSimulation(state),
+      (candidate) => candidate.garbageConversion !== null,
+    )
 
     expect(converting.garbageConversion?.blockIds).toEqual([1, 2])
 

@@ -147,6 +147,27 @@ export interface ClearEvent {
   attackSequences: number[]
 }
 
+/**
+ * One match, resolving on its own clock. Groups are independent: a clear
+ * started three swaps ago can still be popping while a fresh one flashes, and
+ * the rest of the board stays swappable throughout.
+ */
+export interface ClearGroup {
+  id: number
+  panelIds: number[]
+  chainId: number
+  /** Garbage blocks this clear cracked open, converted once it finishes. */
+  garbageBlockIds: number[]
+  phase: 'flashing' | 'clearing'
+  phaseStartedAt: number
+}
+
+/**
+ * A whole-board summary of {@link ClearGroup} activity, gravity and garbage.
+ * Nothing branches on it inside the resolver any more — it exists so the
+ * renderer, the danger clock and the rise gate can ask "is the board busy?"
+ * in one cheap check.
+ */
 export type ResolutionPhase =
   | 'idle'
   | 'flashing'
@@ -169,9 +190,13 @@ export interface SimulationState {
   dangerRemainingMs: number | null
   manualRaise: boolean
   status: RoundStatus
+  /** Derived from `clears` and garbage each step; never branched on. */
   phase: ResolutionPhase
   phaseStartedAt: number
+  /** Every panel in an active clear group, for the renderer. */
   matchedPanelIds: number[]
+  clears: ClearGroup[]
+  nextClearId: number
   pendingSwap: PendingSwap | null
   chain: ChainState | null
   nextChainId: number

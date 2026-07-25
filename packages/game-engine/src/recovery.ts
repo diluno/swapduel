@@ -41,6 +41,18 @@ const phases = new Set([
 ])
 const statuses = new Set(['playing', 'paused', 'lost'])
 
+function isClearGroup(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    isInteger(value.id, 1) &&
+    isNumberArray(value.panelIds, 72) &&
+    isInteger(value.chainId, 1) &&
+    isNumberArray(value.garbageBlockIds, 32) &&
+    (value.phase === 'flashing' || value.phase === 'clearing') &&
+    isFiniteNumber(value.phaseStartedAt)
+  )
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -272,6 +284,10 @@ export function isSimulationState(
     phases.has(value.phase) &&
     isFiniteNumber(value.phaseStartedAt) &&
     isNumberArray(value.matchedPanelIds, 72) &&
+    Array.isArray(value.clears) &&
+    value.clears.length <= 32 &&
+    value.clears.every(isClearGroup) &&
+    isInteger(value.nextClearId, 1) &&
     (value.pendingSwap === null ||
       (isRecord(value.pendingSwap) &&
         isCoordinate(value.pendingSwap.from, config.board) &&
@@ -324,7 +340,7 @@ export function serializeSimulationSnapshot(
   savedAt: number,
 ): string {
   return JSON.stringify({
-    version: 2,
+    version: 3,
     scopeId,
     seed: state.seed,
     savedAt,
@@ -347,7 +363,7 @@ export function restoreSimulationSnapshot(
     const snapshot: unknown = JSON.parse(serialized)
     if (
       !isRecord(snapshot) ||
-      snapshot.version !== 2 ||
+      snapshot.version !== 3 ||
       snapshot.scopeId !== options.scopeId ||
       snapshot.seed !== options.expectedSeed ||
       !isFiniteNumber(snapshot.savedAt) ||

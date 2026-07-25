@@ -115,7 +115,14 @@ describe('danger state machine', () => {
     const initial = createSimulation('danger-unrelated')
     let state = {
       ...initial,
+      // A grounded stack in column 5 blocks the top; the circles clear far
+      // away from it on the bottom row.
       board: boardWith([
+        ...Array.from({ length: 11 }, (_, row) => [
+          row,
+          5,
+          row % 2 === 0 ? 'triangle' : 'diamond',
+        ]) as Array<[number, number, 'triangle' | 'diamond']>,
         [11, 5, 'star'],
         [0, 0, 'circle'],
         [0, 1, 'circle'],

@@ -52,6 +52,7 @@ export {
   type CellState,
   type ChainState,
   type ClearEvent,
+  type ClearGroup,
   type Coordinate,
   type GarbageBlock,
   type GarbageConversionState,
