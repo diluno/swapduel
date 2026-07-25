@@ -44,7 +44,10 @@ export const defaultGameConfig: GameConfig = {
     speedIncreaseIntervalSeconds: 15,
     speedMultiplierPerIncrease: 1.12,
     maximumRowsPerSecond: 0.25,
-    manualRowsPerSecond: 0.9,
+    // Holding raise should feel like a snap-scroll, not a slightly brisker
+    // automatic rise: a row every third of a second, ~12x the top automatic
+    // speed, so pulling a fresh row down is a deliberate beat rather than a wait.
+    manualRowsPerSecond: 3,
     manualStopDrainMultiplier: 3,
   },
   attacks: {
