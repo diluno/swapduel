@@ -299,7 +299,7 @@ onBeforeUnmount(() => {
     <section class="game-layout">
       <header class="scorebar">
         <NuxtLink class="exit" to="/" aria-label="Back to menu">
-          <span aria-hidden="true">←</span>
+          <Icon name="solar:alt-arrow-left-bold" />
         </NuxtLink>
         <div class="stat">
           <small>Score</small>
@@ -333,8 +333,14 @@ onBeforeUnmount(() => {
             <span>{{ state.totalCleared }} panels</span>
             <span>{{ elapsedLabel }}</span>
           </div>
-          <button type="button" @click="startRun">Play again</button>
-          <NuxtLink to="/">Back to menu</NuxtLink>
+          <button type="button" @click="startRun">
+            <Icon name="solar:restart-bold" />
+            Play again
+          </button>
+          <NuxtLink to="/">
+            <Icon name="solar:home-smile-bold" />
+            Back to menu
+          </NuxtLink>
         </div>
       </div>
 
@@ -348,6 +354,7 @@ onBeforeUnmount(() => {
           @pointercancel="stopRaise"
           @pointerleave="stopRaise"
         >
+          <Icon name="solar:double-alt-arrow-up-bold" />
           Hold to raise
         </button>
         <button
@@ -357,7 +364,8 @@ onBeforeUnmount(() => {
           :aria-pressed="soundEnabled"
           @click="toggleSound"
         >
-          <span aria-hidden="true">{{ soundEnabled ? '♪' : '×' }}</span>
+          <Icon v-if="soundEnabled" name="solar:volume-loud-bold" />
+          <Icon v-else name="solar:muted-bold" />
         </button>
       </div>
     </section>

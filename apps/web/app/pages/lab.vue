@@ -589,6 +589,8 @@ onBeforeUnmount(() => {
           :title="soundEnabled ? 'Mute game sounds' : 'Enable game sounds'"
           @click="toggleSound"
         >
+          <Icon v-if="soundEnabled" name="solar:volume-loud-bold" />
+          <Icon v-else name="solar:muted-bold" />
           {{ soundEnabled ? 'Sound on' : 'Sound off' }}
         </button>
         <button @click="reset">Reset board</button>

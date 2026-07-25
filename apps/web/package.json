@@ -17,6 +17,8 @@
     "vue": "^3.5.17"
   },
   "devDependencies": {
+    "@iconify-json/solar": "^1.2.5",
+    "@nuxt/icon": "^2.3.1",
     "typescript": "^5.8.3",
     "vue-tsc": "^3.0.3"
   }

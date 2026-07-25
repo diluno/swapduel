@@ -871,6 +871,7 @@ onBeforeUnmount(() => {
       <p>Match unavailable</p>
       <h1>Round setup missing</h1>
       <NuxtLink :to="`/room/${roomState?.roomCode ?? ''}`">
+        <Icon name="solar:alt-arrow-left-bold" />
         Back to room
       </NuxtLink>
     </section>
@@ -878,7 +879,7 @@ onBeforeUnmount(() => {
     <section v-else class="game-layout">
       <header class="scorebar">
         <NuxtLink class="exit" to="/" aria-label="Leave match">
-          <span aria-hidden="true">←</span>
+          <Icon name="solar:alt-arrow-left-bold" />
         </NuxtLink>
         <div class="player-score">
           <strong>{{ ownPlayer?.displayName ?? 'You' }}</strong>
@@ -1006,13 +1007,17 @@ onBeforeUnmount(() => {
               :disabled="rematchRequested"
               @click="askForRematch"
             >
+              <Icon name="solar:restart-bold" />
               {{
                 rematchRequested
                   ? 'Waiting for opponent…'
                   : 'Play again'
               }}
             </button>
-            <NuxtLink to="/">Leave room</NuxtLink>
+            <NuxtLink to="/">
+              <Icon name="solar:home-smile-bold" />
+              Leave room
+            </NuxtLink>
           </div>
         </div>
       </div>
@@ -1031,6 +1036,7 @@ onBeforeUnmount(() => {
           @pointercancel="stopRaise"
           @pointerleave="stopRaise"
         >
+          <Icon name="solar:double-alt-arrow-up-bold" />
           Hold to raise
         </button>
         <button
@@ -1041,7 +1047,8 @@ onBeforeUnmount(() => {
           :title="soundEnabled ? 'Mute game sounds' : 'Enable game sounds'"
           @click="toggleSound"
         >
-          <span aria-hidden="true">{{ soundEnabled ? '♪' : '×' }}</span>
+          <Icon v-if="soundEnabled" name="solar:volume-loud-bold" />
+          <Icon v-else name="solar:muted-bold" />
         </button>
       </div>
 

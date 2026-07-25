@@ -69,12 +69,14 @@ async function joinPrivateMatch(): Promise<void> {
         </label>
 
         <button class="primary-action" type="submit" :disabled="busy">
+          <Icon name="solar:users-group-two-rounded-bold" />
           {{ busy ? 'Connecting…' : 'Create private match' }}
         </button>
 
         <div class="divider"><span>or play alone</span></div>
 
         <NuxtLink class="secondary-action secondary-action--link" to="/solo">
+          <Icon name="solar:medal-ribbons-star-bold" />
           Endless score attack
         </NuxtLink>
 
@@ -99,6 +101,7 @@ async function joinPrivateMatch(): Promise<void> {
           :disabled="busy"
           @click="joinPrivateMatch"
         >
+          <Icon name="solar:login-3-bold" />
           Join match
         </button>
       </form>
@@ -117,6 +120,7 @@ async function joinPrivateMatch(): Promise<void> {
       </p>
 
       <NuxtLink v-if="isDevelopment" class="lab-link" to="/lab">
+        <Icon name="solar:test-tube-bold" />
         Open the board laboratory
       </NuxtLink>
     </section>
