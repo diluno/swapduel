@@ -1,4 +1,5 @@
-import type { Board, Coordinate, Panel } from './types'
+import { garbageOccupiesCell } from './garbage'
+import type { Board, Coordinate, GarbageBlock, Panel } from './types'
 
 function isLineMatchable(panel: Panel | null): panel is Panel {
   return (
@@ -8,20 +9,44 @@ function isLineMatchable(panel: Panel | null): panel is Panel {
   )
 }
 
+// A panel only counts toward a match once it has something solid all the way
+// down to the floor. Without this a panel swapped over a hole would clear
+// against its new neighbours instead of falling past them.
+function groundedRowCount(
+  board: Board,
+  garbage: GarbageBlock[],
+  column: number,
+): number {
+  for (let row = 0; row < board.visibleRows; row += 1) {
+    const filled =
+      (board.cells[row]?.[column] ?? null) !== null ||
+      garbage.some((block) => garbageOccupiesCell(block, row, column))
+    if (!filled) return row
+  }
+
+  return board.visibleRows
+}
+
 function coordinateKey(row: number, column: number): string {
   return `${row}:${column}`
 }
 
-export function findMatches(board: Board): Coordinate[] {
+export function findMatches(
+  board: Board,
+  garbage: GarbageBlock[] = [],
+): Coordinate[] {
   const matches = new Map<string, Coordinate>()
   const rowCount = board.visibleRows
+  const grounded = Array.from({ length: board.columns }, (_, column) =>
+    groundedRowCount(board, garbage, column),
+  )
 
   for (let row = 0; row < rowCount; row += 1) {
     let runStart = 0
 
     while (runStart < board.columns) {
       const first = board.cells[row]?.[runStart] ?? null
-      if (!isLineMatchable(first)) {
+      if (!isLineMatchable(first) || row >= grounded[runStart]!) {
         runStart += 1
         continue
       }
@@ -31,6 +56,7 @@ export function findMatches(board: Board): Coordinate[] {
         const candidate = board.cells[row]?.[runEnd] ?? null
         if (
           !isLineMatchable(candidate) ||
+          row >= grounded[runEnd]! ||
           candidate.type !== first.type
         ) {
           break
@@ -53,7 +79,7 @@ export function findMatches(board: Board): Coordinate[] {
 
     while (runStart < rowCount) {
       const first = board.cells[runStart]?.[column] ?? null
-      if (!isLineMatchable(first)) {
+      if (!isLineMatchable(first) || runStart >= grounded[column]!) {
         runStart += 1
         continue
       }
@@ -63,6 +89,7 @@ export function findMatches(board: Board): Coordinate[] {
         const candidate = board.cells[runEnd]?.[column] ?? null
         if (
           !isLineMatchable(candidate) ||
+          runEnd >= grounded[column]! ||
           candidate.type !== first.type
         ) {
           break
@@ -149,6 +176,9 @@ export function findMatches(board: Board): Coordinate[] {
   )
 }
 
-export function hasMatches(board: Board): boolean {
-  return findMatches(board).length > 0
+export function hasMatches(
+  board: Board,
+  garbage: GarbageBlock[] = [],
+): boolean {
+  return findMatches(board, garbage).length > 0
 }

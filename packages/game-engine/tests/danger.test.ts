@@ -78,7 +78,17 @@ describe('danger state machine', () => {
     const initial = createSimulation('danger-pause')
     let state = {
       ...initial,
+      // Hearts across the top of three full columns. The fill alternates in
+      // both directions so nothing but the heart row can match, and it keeps
+      // the hearts grounded — a floating row would just fall instead.
       board: boardWith([
+        ...Array.from({ length: 3 }, (_, column) =>
+          Array.from({ length: 11 }, (_, row) => [
+            row,
+            column,
+            (row + column) % 2 === 0 ? 'circle' : 'triangle',
+          ]),
+        ).flat() as Array<[number, number, 'circle' | 'triangle']>,
         [11, 0, 'heart'],
         [11, 1, 'heart'],
         [11, 2, 'heart'],

@@ -515,7 +515,7 @@ function advanceResolution(
     if (state.pendingSwap !== null) {
       return state
     }
-    const matches = findMatches(state.board)
+    const matches = findMatches(state.board, state.garbage)
     if (matches.length > 0) {
       return beginMatchResolution(state, matches, config)
     }
@@ -626,7 +626,7 @@ function advanceResolution(
       phaseStartedAt: state.elapsedMs,
       matchedPanelIds: [],
     }
-    const matches = findMatches(stableState.board)
+    const matches = findMatches(stableState.board, stableState.garbage)
     if (matches.length > 0) {
       return beginMatchResolution(stableState, matches, config)
     }

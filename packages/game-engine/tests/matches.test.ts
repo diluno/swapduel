@@ -18,7 +18,11 @@ describe('match detection', () => {
   })
 
   it('finds a vertical match', () => {
+    // The two filler panels keep the column grounded — floating panels fall
+    // before they are allowed to match.
     const board = boardWith([
+      [0, 4, 'heart'],
+      [1, 4, 'circle'],
       [2, 4, 'triangle'],
       [3, 4, 'triangle'],
       [4, 4, 'triangle'],
@@ -38,6 +42,12 @@ describe('match detection', () => {
       [2, 3, 'star'],
       [1, 2, 'star'],
       [3, 2, 'star'],
+      // Grounding fill underneath, arranged so it never matches itself.
+      [0, 1, 'heart'],
+      [1, 1, 'circle'],
+      [0, 2, 'circle'],
+      [0, 3, 'heart'],
+      [1, 3, 'circle'],
     ])
 
     expect(findMatches(board)).toHaveLength(5)
