@@ -7,6 +7,10 @@ const BoardEngine = preload("res://game/engine/board.gd")
 const Garbage = preload("res://game/engine/garbage.gd")
 const Danger = preload("res://game/engine/danger.gd")
 const Gravity = preload("res://game/engine/gravity.gd")
+const Matches = preload("res://game/engine/matches.gd")
+const Scoring = preload("res://game/engine/scoring.gd")
+const Attacks = preload("res://game/engine/attacks.gd")
+const Cancellation = preload("res://game/engine/cancellation.gd")
 
 const UINT32_MASK := 0xFFFFFFFF
 
@@ -189,8 +193,10 @@ static func step_simulation(
 	):
 		_complete_pending_swap(state)
 
-	# Resolution and chain progression are the next port tranche. The ordering
-	# here already matches the TypeScript tail: danger runs before rising.
+	_advance_resolution(state, game_config)
+	_sync_phase_summary(state)
+	_advance_chain_closure(state, game_config)
+	_advance_garbage_lifecycle(state, game_config)
 	_sync_phase_summary(state)
 	Danger.advance_danger_state(state, game_config)
 	_advance_rise(state, game_config)
@@ -336,6 +342,532 @@ static func _complete_pending_swap(state: Types.SimulationState) -> void:
 		)
 	state.pending_swap = null
 	state.board.assert_ownership()
+
+
+static func _advance_resolution(
+	state: Types.SimulationState,
+	config: Types.GameConfig,
+) -> void:
+	_release_stray_swap_states(state)
+	_advance_clear_groups(state, config)
+	_advance_garbage_conversion(state, config)
+	_advance_panel_gravity(state, config)
+	var matches := Matches.find_matches(state.board, state.garbage)
+	if not matches.is_empty():
+		_begin_match_resolution(state, matches, config)
+
+
+static func _begin_match_resolution(
+	state: Types.SimulationState,
+	matches: Array[Vector2i],
+	config: Types.GameConfig,
+) -> void:
+	var matched_panels: Array[Types.GamePanel] = []
+	var matched_panel_ids: Array[int] = []
+	var shock_size := 0
+	for coordinate in matches:
+		var panel := state.board.get_panel(coordinate.y, coordinate.x)
+		if panel == null:
+			continue
+		matched_panels.push_back(panel)
+		matched_panel_ids.push_back(panel.id)
+		if panel.type == &"shock":
+			shock_size += 1
+
+	var normal_size := matched_panel_ids.size() - shock_size
+	var previous_chain := state.chain
+	var qualified_for_chain := false
+	if previous_chain != null:
+		for panel in matched_panels:
+			if panel.chain_eligible and panel.chain_id == previous_chain.id:
+				qualified_for_chain = true
+				break
+
+	var chain_is_live := (
+		previous_chain != null and previous_chain.status == &"active"
+	)
+	var chain: Types.ChainState
+	if previous_chain != null and qualified_for_chain:
+		chain = previous_chain
+		chain.level += 1
+		chain.last_qualifying_event_at = state.elapsed_clock
+		chain.closing_started_at = -1
+		chain.status = &"active"
+	elif chain_is_live:
+		chain = previous_chain
+	else:
+		if previous_chain != null:
+			_clear_chain_metadata(state.board)
+		chain = Types.ChainState.new()
+		chain.id = state.next_chain_id
+		chain.level = 1
+		chain.started_at = state.elapsed_clock
+		chain.last_qualifying_event_at = state.elapsed_clock
+		state.next_chain_id += 1
+
+	var clear_chain_level := chain.level if qualified_for_chain else 1
+	var new_attacks: Array[Types.OutgoingAttack] = []
+	_append_attack(
+		new_attacks,
+		state,
+		&"combo",
+		normal_size,
+		clear_chain_level,
+		Attacks.combo_attack_blocks(normal_size, config),
+	)
+	_append_attack(
+		new_attacks,
+		state,
+		&"shock",
+		shock_size,
+		clear_chain_level,
+		Attacks.shock_attack_blocks(shock_size, config),
+	)
+	if qualified_for_chain:
+		_append_attack(
+			new_attacks,
+			state,
+			&"chain",
+			matched_panel_ids.size(),
+			chain.level,
+			Attacks.chain_attack_blocks(chain.level, state.board.columns),
+		)
+
+	var cancellation := Cancellation.cancel_incoming_garbage(
+		state.incoming_garbage,
+		new_attacks,
+	)
+	state.incoming_garbage.assign(cancellation.incoming_garbage)
+	state.outgoing_attacks.append_array(cancellation.attacks)
+
+	var combo_stop := 0
+	if normal_size >= 4:
+		combo_stop = (
+			config.timing.combo_stop_base
+			+ (normal_size - 4) * config.timing.combo_stop_per_panel
+		)
+	var chain_stop := 0
+	if qualified_for_chain and chain.level >= 2:
+		chain_stop = (
+			config.timing.chain_stop_base
+			+ (chain.level - 2) * config.timing.chain_stop_per_level
+		)
+	state.stop_time_remaining = mini(
+		config.timing.maximum_stop_time,
+		state.stop_time_remaining + combo_stop + chain_stop,
+	)
+
+	for panel in matched_panels:
+		panel.state = &"flashing"
+		panel.chain_id = chain.id
+		panel.animation_started_at = state.elapsed_clock
+
+	var clear := Types.ClearGroup.new()
+	clear.id = state.next_clear_id
+	clear.panel_ids.assign(matched_panel_ids)
+	clear.chain_id = chain.id
+	clear.garbage_block_ids.assign(
+		Garbage.garbage_blocks_touched_by_clear(state.garbage, matches),
+	)
+	clear.phase = &"flashing"
+	clear.phase_started_at = state.elapsed_clock
+	state.clears.push_back(clear)
+	state.next_clear_id += 1
+	state.chain = chain
+
+	var attack_sequences: Array[int] = []
+	for attack in cancellation.attacks:
+		attack_sequences.push_back(attack.sequence)
+	var clear_event := Types.ClearEvent.new()
+	clear_event.size = matched_panel_ids.size()
+	clear_event.normal_size = normal_size
+	clear_event.shock_size = shock_size
+	clear_event.chain_level = clear_chain_level
+	clear_event.qualified_for_chain = qualified_for_chain
+	clear_event.occurred_at = state.elapsed_clock
+	clear_event.attack_sequences.assign(attack_sequences)
+	for panel in matched_panels:
+		if panel.row == state.board.visible_rows - 1:
+			clear_event.touched_top = true
+			break
+	state.last_clear_event = clear_event
+	state.last_clear_size = matched_panel_ids.size()
+	state.score += Scoring.clear_score(
+		matched_panel_ids.size(),
+		normal_size,
+		clear_chain_level,
+		qualified_for_chain,
+		config,
+	)
+
+
+static func _append_attack(
+	attacks: Array[Types.OutgoingAttack],
+	state: Types.SimulationState,
+	kind: StringName,
+	clear_size: int,
+	chain_level: int,
+	blocks: Array[Types.AttackBlock],
+) -> void:
+	if blocks.is_empty():
+		return
+	attacks.push_back(
+		Types.OutgoingAttack.new(
+			state.next_attack_sequence,
+			kind,
+			state.elapsed_clock,
+			clear_size,
+			chain_level,
+			blocks,
+		),
+	)
+	state.next_attack_sequence += 1
+
+
+static func _advance_clear_groups(
+	state: Types.SimulationState,
+	config: Types.GameConfig,
+) -> void:
+	if state.clears.is_empty():
+		return
+
+	var remaining: Array[Types.ClearGroup] = []
+	for group in state.clears:
+		var elapsed := state.elapsed_clock - group.phase_started_at
+		if group.phase == &"flashing":
+			if elapsed < config.timing.match_flash_duration:
+				remaining.push_back(group)
+				continue
+			for panel_id in group.panel_ids:
+				var panel := _panel_by_id(state.board, panel_id)
+				if panel != null:
+					panel.state = &"clearing"
+					panel.animation_started_at = state.elapsed_clock
+			group.phase = &"clearing"
+			group.phase_started_at = state.elapsed_clock
+			remaining.push_back(group)
+			continue
+
+		if elapsed < _clear_phase_duration(group.panel_ids.size(), config):
+			remaining.push_back(group)
+			continue
+
+		var ids: Dictionary = {}
+		for panel_id in group.panel_ids:
+			ids[panel_id] = true
+		for index in state.board.cells.size():
+			var panel := state.board.cells[index]
+			if panel == null or not ids.has(panel.id):
+				continue
+			var released := state.board.take_panel(panel.row, panel.column)
+			state.board.release_panel(released)
+		state.total_cleared += group.panel_ids.size()
+		if not group.garbage_block_ids.is_empty():
+			_begin_garbage_conversion(
+				state,
+				group.garbage_block_ids,
+				config,
+			)
+
+	state.clears.assign(remaining)
+	state.board.assert_ownership()
+
+
+static func _begin_garbage_conversion(
+	state: Types.SimulationState,
+	block_ids: Array[int],
+	config: Types.GameConfig,
+) -> void:
+	var valid_ids: Array[int] = []
+	for block_id in block_ids:
+		for block in state.garbage:
+			if block.id == block_id:
+				valid_ids.push_back(block_id)
+				block.state = &"converting"
+				block.conversion_row = block.row
+				block.fall_progress = 0.0
+				break
+	if valid_ids.is_empty():
+		return
+
+	if state.garbage_conversion != null:
+		for block_id in valid_ids:
+			if not state.garbage_conversion.block_ids.has(block_id):
+				state.garbage_conversion.block_ids.push_back(block_id)
+		return
+
+	var conversion := Types.GarbageConversionState.new()
+	conversion.block_ids.assign(valid_ids)
+	conversion.active_block_id = valid_ids[0]
+	conversion.next_column = 0
+	conversion.next_cell_at = (
+		state.elapsed_clock + config.timing.garbage_cell_convert
+	)
+	state.garbage_conversion = conversion
+
+
+static func _advance_garbage_conversion(
+	state: Types.SimulationState,
+	config: Types.GameConfig,
+) -> void:
+	var conversion := state.garbage_conversion
+	if conversion == null:
+		return
+	var block := _garbage_by_id(state.garbage, conversion.active_block_id)
+	if block == null:
+		state.garbage_conversion = null
+		return
+
+	if (
+		conversion.release_at >= 0
+		and state.elapsed_clock >= conversion.release_at
+	):
+		for panel_id in conversion.converted_panel_ids:
+			var converted := _panel_by_id(state.board, panel_id)
+			if converted == null:
+				continue
+			converted.state = &"idle"
+			converted.chain_eligible = state.chain != null
+			converted.chain_id = -1 if state.chain == null else state.chain.id
+			converted.animation_started_at = -1
+
+		if block.height == 1:
+			state.garbage.erase(block)
+		else:
+			block.row += 1
+			block.height -= 1
+			block.conversion_row = -1
+			block.state = &"idle"
+
+		conversion.block_ids.erase(block.id)
+		if conversion.block_ids.is_empty():
+			state.garbage_conversion = null
+			return
+
+		conversion.active_block_id = conversion.block_ids[0]
+		conversion.next_column = 0
+		conversion.converted_panel_ids.clear()
+		conversion.next_cell_at = (
+			state.elapsed_clock + config.timing.garbage_cell_convert
+		)
+		conversion.release_at = -1
+		return
+
+	if (
+		conversion.release_at >= 0
+		or state.elapsed_clock < conversion.next_cell_at
+	):
+		return
+
+	var conversion_row := (
+		block.row if block.conversion_row < 0 else block.conversion_row
+	)
+	var column := block.column + conversion.next_column
+	var palette: Array[StringName] = []
+	palette.assign(
+		Types.NORMAL_PANEL_TYPES.slice(0, config.board.normal_panel_types),
+	)
+	var candidates := BoardEngine.available_types(
+		state.board,
+		conversion_row,
+		column,
+		palette,
+	)
+	var safe_types := candidates if not candidates.is_empty() else palette
+	var random_panel := Rng.random_integer(
+		state.conversion_random_state,
+		safe_types.size(),
+	)
+	state.conversion_random_state = random_panel.random_state
+
+	if (
+		state.board.is_inside(conversion_row, column)
+		and state.board.get_panel(conversion_row, column) == null
+	):
+		var panel := state.board.acquire_panel(
+			safe_types[random_panel.value],
+			conversion_row,
+			column,
+		)
+		panel.state = &"garbage-locked"
+		panel.chain_eligible = state.chain != null
+		panel.chain_id = -1 if state.chain == null else state.chain.id
+		panel.animation_started_at = state.elapsed_clock
+		state.board.set_panel(conversion_row, column, panel)
+		conversion.converted_panel_ids.push_back(panel.id)
+
+	conversion.next_column += 1
+	conversion.next_cell_at += config.timing.garbage_cell_convert
+	if conversion.next_column >= block.width:
+		conversion.release_at = (
+			state.elapsed_clock + config.timing.garbage_release_delay
+		)
+	state.board.assert_ownership()
+
+
+static func _clear_phase_duration(
+	panel_count: int,
+	config: Types.GameConfig,
+) -> int:
+	return (
+		config.timing.clear_duration
+		+ maxi(0, panel_count - 1) * config.timing.panel_pop_interval
+	)
+
+
+static func _advance_panel_gravity(
+	state: Types.SimulationState,
+	config: Types.GameConfig,
+) -> void:
+	var active_chain_id := -1 if state.chain == null else state.chain.id
+	for column in state.board.columns:
+		var landing := 0
+		for row in state.board.visible_rows:
+			if Garbage.garbage_at(state.garbage, row, column) != null:
+				landing = row + 1
+				continue
+
+			var panel := state.board.get_panel(row, column)
+			if panel == null:
+				continue
+			if panel.state not in [&"idle", &"hovering"]:
+				landing = row + 1
+				continue
+			if row == landing:
+				if panel.state == &"hovering":
+					panel.state = &"idle"
+					panel.animation_started_at = -1
+				landing = row + 1
+				continue
+			if panel.state == &"idle":
+				panel.state = &"hovering"
+				panel.animation_started_at = state.elapsed_clock
+				landing = row + 1
+				continue
+			if (
+				state.elapsed_clock - panel.animation_started_at
+				< config.timing.fall_delay
+			):
+				landing = row + 1
+				continue
+
+			panel = state.board.take_panel(row, column)
+			panel.state = &"idle"
+			panel.offset_y = 0.0
+			panel.animation_started_at = -1
+			panel.chain_eligible = active_chain_id >= 0
+			panel.chain_id = active_chain_id
+			state.board.set_panel(landing, column, panel)
+			landing += 1
+	state.board.assert_ownership()
+
+
+static func _release_stray_swap_states(state: Types.SimulationState) -> void:
+	if state.pending_swap != null:
+		return
+	for panel in state.board.cells:
+		if panel != null and panel.state == &"swapping":
+			panel.state = &"idle"
+			panel.offset_x = 0.0
+			panel.animation_started_at = -1
+
+
+static func _advance_chain_closure(
+	state: Types.SimulationState,
+	config: Types.GameConfig,
+) -> void:
+	if (
+		state.chain != null
+		and state.chain.status == &"active"
+		and state.phase == &"idle"
+		and state.pending_swap == null
+	):
+		state.chain.status = &"closing"
+		state.chain.closing_started_at = state.elapsed_clock
+		return
+
+	if (
+		state.chain == null
+		or state.chain.status != &"closing"
+		or state.chain.closing_started_at < 0
+		or state.phase != &"idle"
+		or state.pending_swap != null
+		or _has_falling_garbage(state)
+		or state.elapsed_clock - state.chain.closing_started_at
+			< config.timing.chain_window
+	):
+		return
+	_clear_chain_metadata(state.board)
+	state.chain = null
+
+
+static func _clear_chain_metadata(board: Types.Board) -> void:
+	for panel in board.cells:
+		if panel == null:
+			continue
+		panel.chain_eligible = false
+		panel.chain_id = -1
+
+
+static func _advance_garbage_lifecycle(
+	state: Types.SimulationState,
+	config: Types.GameConfig,
+) -> void:
+	Garbage.advance_falling_garbage(state, config)
+
+	if state.garbage_conversion == null and state.pending_swap == null:
+		var unsupported := false
+		for block in state.garbage:
+			if (
+				block.state == &"idle"
+				and Garbage.garbage_block_can_fall(
+					block,
+					state.board,
+					state.garbage,
+				)
+			):
+				block.state = &"falling"
+				block.fall_progress = 0.0
+				unsupported = true
+		if unsupported:
+			return
+
+	var safe_to_insert := (
+		state.status == &"playing"
+		and state.danger_remaining < 0
+		and state.phase == &"idle"
+		and state.pending_swap == null
+		and state.chain == null
+		and state.garbage_conversion == null
+		and not _has_falling_garbage(state)
+	)
+	if (
+		not safe_to_insert
+		or state.incoming_garbage.is_empty()
+		or state.elapsed_clock < state.incoming_garbage[0].ready_at
+	):
+		return
+	Garbage.place_next_garbage_block(state)
+
+
+static func _panel_by_id(
+	board: Types.Board,
+	panel_id: int,
+) -> Types.GamePanel:
+	for panel in board.cells:
+		if panel != null and panel.id == panel_id:
+			return panel
+	return null
+
+
+static func _garbage_by_id(
+	garbage: Array[Types.GarbageBlock],
+	block_id: int,
+) -> Types.GarbageBlock:
+	for block in garbage:
+		if block.id == block_id:
+			return block
+	return null
 
 
 static func _advance_rise(

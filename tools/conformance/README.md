@@ -15,5 +15,4 @@ pnpm exec vitest run tools/conformance/generate-fixtures.test.ts
 ```
 
 Godot consumes these files through `godot/game/engine/conformance.gd`. The test
-suite compares every checkpoint supported by the currently ported simulation
-modules; the checked prefix expands as each remaining module lands.
+suite compares every checkpoint in all three canonical traces.

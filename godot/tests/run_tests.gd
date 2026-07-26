@@ -13,6 +13,10 @@ const Cancellation = preload("res://game/engine/cancellation.gd")
 const Danger = preload("res://game/engine/danger.gd")
 const Simulation = preload("res://game/engine/simulation.gd")
 const Conformance = preload("res://game/engine/conformance.gd")
+const Recovery = preload("res://game/engine/recovery.gd")
+const MainScreen = preload("res://game/main.gd")
+const BoardView = preload("res://game/presentation/board_view.gd")
+const GameSettings = preload("res://game/settings/settings.gd")
 
 var _checks := 0
 var _failures := 0
@@ -31,6 +35,11 @@ func _initialize() -> void:
 	_test_danger()
 	_test_simulation_state()
 	_test_swapping()
+	_test_simulation_resolution()
+	_test_recovery()
+	_test_board_rise_projection()
+	_test_offline_shell()
+	_test_native_settings()
 	_test_conformance_initial_states()
 
 	if _failures == 0:
@@ -664,6 +673,351 @@ func _test_swapping() -> void:
 	)
 
 
+func _test_simulation_resolution() -> void:
+	var state := Simulation.create_simulation("resolution-clear")
+	state.board = _board_with([
+		[0, 0, &"circle"],
+		[0, 1, &"circle"],
+		[0, 2, &"circle"],
+	])
+	state.garbage = [
+		_garbage_block(1, &"normal", 0, 1, 3, 1, &"idle"),
+	]
+
+	Simulation.step_simulation(state)
+	_check(
+		state.score == 30
+			and state.clears.size() == 1
+			and state.clears[0].phase == &"flashing",
+		"settled match begins an independently timed clear",
+	)
+
+	var saw_locked_chain_panels := false
+	for _step in 180:
+		Simulation.step_simulation(state)
+		if state.garbage_conversion != null:
+			var locked_count := 0
+			var chain_linked_count := 0
+			for panel in state.board.cells:
+				if panel != null and panel.state == &"garbage-locked":
+					locked_count += 1
+					if panel.chain_eligible and panel.chain_id >= 0:
+						chain_linked_count += 1
+			if locked_count > 0 and locked_count == chain_linked_count:
+				saw_locked_chain_panels = true
+		if (
+			state.garbage.is_empty()
+			and state.garbage_conversion == null
+			and state.total_cleared == 3
+		):
+			break
+
+	var remaining_panels := 0
+	for panel in state.board.cells:
+		if panel != null:
+			remaining_panels += 1
+	_check(
+		state.total_cleared == 3
+			and state.garbage.is_empty()
+			and state.garbage_conversion == null
+			and remaining_panels == 3,
+		"touched one-row garbage converts into normal panels",
+	)
+	_check(
+		saw_locked_chain_panels,
+		"converted panels inherit the active chain while locked",
+	)
+
+
+func _test_recovery() -> void:
+	var state := Simulation.create_simulation("snapshot-seed")
+	Simulation.set_manual_raise(state, true)
+	for _step in 37:
+		Simulation.step_simulation(state)
+	var serialized := Recovery.serialize_simulation_snapshot(
+		state,
+		"match-1:round-1",
+		10_000,
+	)
+	var root = JSON.parse_string(serialized)
+	_check(
+		root is Dictionary
+			and root["version"] == 4
+			and root["state"]["elapsedClock"] == state.elapsed_clock
+			and root["state"]["elapsedMs"]
+				== Config.clock_to_milliseconds(state.elapsed_clock),
+		"snapshot uses the version 4 web-compatible clock schema",
+	)
+
+	var restored := Recovery.restore_simulation_snapshot(
+		serialized,
+		"match-1:round-1",
+		"snapshot-seed",
+		20_000,
+		30_000,
+	)
+	_check(
+		restored != null
+			and not restored.manual_raise
+			and Simulation.simulation_checksum(restored)
+				== Simulation.simulation_checksum(state),
+		"fresh snapshot restores without changing its checksum",
+	)
+
+	var complex := Simulation.create_simulation("complex-snapshot")
+	complex.board = _board_with([
+		[0, 0, &"triangle"],
+		[0, 1, &"triangle"],
+		[0, 2, &"triangle"],
+	])
+	complex.board.incoming_row.assign([
+		&"circle",
+		&"triangle",
+		&"star",
+		&"diamond",
+		&"heart",
+		&"circle",
+	])
+	complex.garbage = [
+		_garbage_block(1, &"normal", 0, 1, 3, 1, &"idle"),
+	]
+	for _step in 120:
+		Simulation.step_simulation(complex)
+		if (
+			complex.garbage_conversion != null
+			and not complex.garbage_conversion.converted_panel_ids.is_empty()
+		):
+			break
+	var complex_serialized := Recovery.serialize_simulation_snapshot(
+		complex,
+		"solo:complex",
+		12_000,
+	)
+	var complex_restored := Recovery.restore_simulation_snapshot(
+		complex_serialized,
+		"solo:complex",
+		"complex-snapshot",
+		13_000,
+		5_000,
+	)
+	_check(
+		complex_restored != null
+			and complex_restored.garbage_conversion != null
+			and Simulation.simulation_checksum(complex_restored)
+				== Simulation.simulation_checksum(complex),
+		"active clears, chains, garbage, and conversion round-trip",
+	)
+	_check(
+		Recovery.restore_simulation_snapshot(
+			serialized,
+			"match-1:round-2",
+			"snapshot-seed",
+			20_000,
+			30_000,
+		) == null,
+		"snapshot from another recovery scope is rejected",
+	)
+	_check(
+		Recovery.restore_simulation_snapshot(
+			serialized,
+			"match-1:round-1",
+			"different-seed",
+			20_000,
+			30_000,
+		) == null,
+		"snapshot with another expected seed is rejected",
+	)
+	_check(
+		Recovery.restore_simulation_snapshot(
+			serialized,
+			"match-1:round-1",
+			"snapshot-seed",
+			40_001,
+			30_000,
+		) == null,
+		"stale snapshot is rejected",
+	)
+	_check(
+		Recovery.restore_simulation_snapshot(
+			"{bad json",
+			"match-1:round-1",
+			"snapshot-seed",
+			20_000,
+			30_000,
+		) == null,
+		"malformed snapshot JSON is rejected",
+	)
+
+	var malformed: Dictionary = root.duplicate(true)
+	malformed["state"]["board"]["cells"][0][0]["row"] = 9
+	_check(
+		Recovery.restore_simulation_snapshot(
+			JSON.stringify(malformed, "", true, true),
+			"match-1:round-1",
+			"snapshot-seed",
+			20_000,
+			30_000,
+		) == null,
+		"snapshot with inconsistent panel coordinates is rejected",
+	)
+
+	var legacy: Dictionary = root.duplicate(true)
+	legacy["version"] = 3
+	legacy["scopeId"] = "solo:legacy"
+	legacy["state"].erase("step")
+	legacy["state"].erase("elapsedClock")
+	var migrated := Recovery.restore_simulation_snapshot(
+		JSON.stringify(legacy, "", true, true),
+		"solo:legacy",
+		"snapshot-seed",
+		11_000,
+		5_000,
+	)
+	_check(
+		migrated != null
+			and migrated.step == 37
+			and migrated.elapsed_clock == 1850,
+		"version 3 millisecond snapshot migrates onto the integer clock",
+	)
+
+
+func _test_offline_shell() -> void:
+	var shell := MainScreen.new()
+	shell.recovery_enabled = false
+	shell._build_interface()
+	shell._start_round(&"time-trial")
+	_check(
+		shell.state.status == &"playing"
+			and shell.state.time_limit == Config.TIME_TRIAL_DURATION
+			and shell._format_remaining(shell.state.time_limit) == "2:00",
+		"offline shell starts an exact two-minute time trial",
+	)
+	for _step in 15:
+		Simulation.step_simulation(shell.state)
+	var recovery_snapshot := shell._encode_recovery_snapshot(20_000)
+	var recovered := shell._decode_recovery_snapshot(
+		recovery_snapshot,
+		21_000,
+	)
+	_check(
+		not recovered.is_empty()
+			and recovered["mode"] == &"time-trial"
+			and Simulation.simulation_checksum(recovered["state"])
+				== Simulation.simulation_checksum(shell.state),
+		"offline shell recovery preserves mode and simulation checksum",
+	)
+	var wrong_mode = JSON.parse_string(recovery_snapshot)
+	wrong_mode["mode"] = "unknown"
+	_check(
+		shell._decode_recovery_snapshot(
+			JSON.stringify(wrong_mode, "", true, true),
+			21_000,
+		).is_empty(),
+		"offline shell rejects recovery metadata for an unknown mode",
+	)
+	_check(
+		shell._decode_recovery_snapshot(
+			recovery_snapshot,
+			20_000 + shell.RECOVERY_MAX_AGE_MS + 1,
+		).is_empty(),
+		"offline shell rejects stale recovered runs",
+	)
+	shell._show_home()
+	_check(
+		shell.state.status == &"paused" and shell._home_panel.visible,
+		"offline shell returns to a paused mode-selection board",
+	)
+	shell._show_settings()
+	_check(
+		shell._settings_panel.visible and not shell._home_panel.visible,
+		"offline shell opens its native settings panel",
+	)
+	shell._hide_settings()
+	_check(
+		not shell._settings_panel.visible and shell._home_panel.visible,
+		"offline shell returns from settings to mode selection",
+	)
+	shell.free()
+
+
+func _test_native_settings() -> void:
+	var settings := GameSettings.new()
+	settings.battery_saver = false
+	_check(
+		settings.presentation_frame_rate() == 60,
+		"default presentation frame rate remains 60 fps",
+	)
+	settings.battery_saver = true
+	_check(
+		settings.presentation_frame_rate() == 30,
+		"battery saver caps presentation without changing simulation",
+	)
+	settings.free()
+
+	var state := Simulation.create_simulation("reduced-motion")
+	var view := BoardView.new()
+	view.set_simulation_state(state)
+	view.set_reduced_motion(true)
+	_check(
+		view.reduced_motion,
+		"board renderer accepts the reduced-motion preference",
+	)
+	view.free()
+
+
+func _test_board_rise_projection() -> void:
+	var state := Simulation.create_simulation("rise-projection")
+	var view := BoardView.new()
+	view.size = Vector2(300.0, 600.0)
+	view.set_simulation_state(state)
+	var cell := 50.0
+	var panel := state.board.get_panel(0, 0)
+	var panel_id := panel.id
+	state.rise_offset = 1.0
+	var before_y := view._row_y(panel.row, cell)
+	var inserted := BoardEngine.insert_incoming_row(
+		state.board,
+		state.random_state,
+	)
+	state.board = inserted.board
+	state.rise_offset = 0.0
+	var shifted_panel: Types.GamePanel = null
+	for candidate in state.board.cells:
+		if candidate != null and candidate.id == panel_id:
+			shifted_panel = candidate
+			break
+	_check(
+		shifted_panel != null
+			and shifted_panel.offset_y == -1.0
+			and view._row_y(shifted_panel.row, cell) == before_y,
+		"row insertion keeps panel projection continuous without offset_y",
+	)
+
+	state.rise_offset = 0.4
+	var panel_center := Vector2(
+		cell * 2.5,
+		view._row_y(2, cell) + cell * 0.5,
+	)
+	_check(
+		view.coordinate_at(panel_center) == Vector2i(2, 2),
+		"pointer coordinates invert the shared rising-row projection",
+	)
+
+	view.selected = Vector2i(2, 2)
+	view.cursor = Vector2i(1, 2)
+	view.cursor_visible = true
+	view._pointer_active = true
+	view._pointer_row = 2
+	view.shift_tracking_for_inserted_row()
+	_check(
+		view.selected == Vector2i(2, 3)
+			and view.cursor == Vector2i(1, 3)
+			and view._pointer_row == 3,
+		"selection, cursor, and active gesture follow inserted rows",
+	)
+	view.free()
+
+
 func _test_conformance_initial_states() -> void:
 	for trace_name in Conformance.TRACE_NAMES:
 		var trace := Conformance.load_trace(trace_name)
@@ -682,8 +1036,8 @@ func _test_conformance_initial_states() -> void:
 		)
 
 	var supported_steps := {
-		"smoke-swaps": 180,
-		"incoming-garbage": 60,
+		"smoke-swaps": 360,
+		"incoming-garbage": 420,
 		"time-limit": 60,
 	}
 	for trace_name in Conformance.TRACE_NAMES:
