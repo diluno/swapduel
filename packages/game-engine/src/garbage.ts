@@ -1,4 +1,10 @@
 import { defaultGameConfig } from './config'
+import {
+  CLOCK_UNITS_PER_SECOND,
+  clockToMilliseconds,
+  fixedStepClockUnits,
+  millisecondsToClock,
+} from './clock'
 import { randomInteger } from './random'
 import type {
   Board,
@@ -161,7 +167,8 @@ export function advanceFallingGarbage(
     let fallProgress =
       block.fallProgress +
       config.timing.garbageFallCellsPerSecond *
-        (config.timing.fixedStepMs / 1000)
+        (fixedStepClockUnits(config.timing.fixedStepMs) /
+          CLOCK_UNITS_PER_SECOND)
 
     while (
       fallProgress >= 1 &&
@@ -234,7 +241,12 @@ export function enqueueIncomingGarbage(
       blocks: attack.blocks.map((block) => ({ ...block })),
       // The attack is visible in the queue for a beat before it can land, so
       // the defender gets a fair window to answer with a chain.
-      readyAt: attack.readyAt ?? state.elapsedMs + config.timing.garbageTelegraphMs,
+      readyAt:
+        attack.readyAt ??
+        clockToMilliseconds(
+          state.elapsedClock +
+            millisecondsToClock(config.timing.garbageTelegraphMs),
+        ),
     },
   ].sort(
     (left, right) =>

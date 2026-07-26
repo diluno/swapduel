@@ -188,6 +188,11 @@ export interface SimulationState {
   randomState: number
   garbageRandomState: number
   conversionRandomState: number
+  /** Number of completed fixed simulation steps. */
+  step: number
+  /** Exact integer time: 3 units per ms, 50 units per 60 Hz step. */
+  elapsedClock: number
+  /** Millisecond projection for presentation and wire compatibility. */
   elapsedMs: number
   board: Board
   riseOffset: number

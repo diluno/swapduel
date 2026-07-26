@@ -9,6 +9,13 @@ import {
   createInitialBoard,
   insertIncomingRow,
 } from './board'
+import {
+  CLOCK_UNITS_PER_MILLISECOND,
+  CLOCK_UNITS_PER_SECOND,
+  clockToMilliseconds,
+  fixedStepClockUnits,
+  millisecondsToClock,
+} from './clock'
 import { defaultGameConfig } from './config'
 import { advanceDangerState } from './danger'
 import {
@@ -47,6 +54,31 @@ export function clearPhaseDurationMs(
   return (
     config.timing.clearDurationMs +
     Math.max(0, panelCount - 1) * config.timing.panelPopIntervalMs
+  )
+}
+
+function clockAt(
+  state: SimulationState,
+  durationMs = 0,
+): number {
+  return clockToMilliseconds(
+    state.elapsedClock + millisecondsToClock(durationMs),
+  )
+}
+
+function elapsedClockSince(
+  state: SimulationState,
+  timestampMs: number,
+): number {
+  return state.elapsedClock - millisecondsToClock(timestampMs)
+}
+
+function subtractClock(
+  remainingMs: number,
+  clockUnits: number,
+): number {
+  return clockToMilliseconds(
+    Math.max(0, millisecondsToClock(remainingMs) - clockUnits),
   )
 }
 
@@ -180,7 +212,7 @@ function beginGarbageConversion(
       activeBlockId,
       nextColumn: 0,
       convertedPanelIds: [],
-      nextCellAt: state.elapsedMs + config.timing.garbageCellConvertMs,
+      nextCellAt: clockAt(state, config.timing.garbageCellConvertMs),
       releaseAt: null,
     },
   }
@@ -292,9 +324,12 @@ function beginMatchResolution(
       ? 0
       : config.timing.chainStopBaseMs +
         (chain.level - 2) * config.timing.chainStopPerLevelMs
-  const stopTimeRemainingMs = Math.min(
-    config.timing.maximumStopTimeMs,
-    state.stopTimeRemainingMs + comboStopMs + chainStopMs,
+  const stopTimeRemainingMs = clockToMilliseconds(
+    Math.min(
+      millisecondsToClock(config.timing.maximumStopTimeMs),
+      millisecondsToClock(state.stopTimeRemainingMs) +
+        millisecondsToClock(comboStopMs + chainStopMs),
+    ),
   )
   const score =
     state.score +
@@ -377,10 +412,13 @@ function advanceClearGroups(
   let changed = false
 
   for (const group of state.clears) {
-    const elapsed = state.elapsedMs - group.phaseStartedAt
+    const elapsedClock = elapsedClockSince(state, group.phaseStartedAt)
 
     if (group.phase === 'flashing') {
-      if (elapsed < config.timing.matchFlashDurationMs) {
+      if (
+        elapsedClock <
+        millisecondsToClock(config.timing.matchFlashDurationMs)
+      ) {
         clears.push(group)
         continue
       }
@@ -400,7 +438,10 @@ function advanceClearGroups(
     }
 
     if (
-      elapsed < clearPhaseDurationMs(group.panelIds.length, config)
+      elapsedClock <
+      millisecondsToClock(
+        clearPhaseDurationMs(group.panelIds.length, config),
+      )
     ) {
       clears.push(group)
       continue
@@ -461,7 +502,7 @@ function advanceGarbageConversion(
 
   if (
     conversion.releaseAt !== null &&
-    state.elapsedMs >= conversion.releaseAt
+    state.elapsedClock >= millisecondsToClock(conversion.releaseAt)
   ) {
     const convertedIds = new Set(conversion.convertedPanelIds)
     const board = withPanelsById(
@@ -513,7 +554,7 @@ function advanceGarbageConversion(
         nextColumn: 0,
         convertedPanelIds: [],
         nextCellAt:
-          state.elapsedMs + config.timing.garbageCellConvertMs,
+          clockAt(state, config.timing.garbageCellConvertMs),
         releaseAt: null,
       },
     }
@@ -521,7 +562,7 @@ function advanceGarbageConversion(
 
   if (
     conversion.releaseAt !== null ||
-    state.elapsedMs < conversion.nextCellAt
+    state.elapsedClock < millisecondsToClock(conversion.nextCellAt)
   ) {
     return state
   }
@@ -585,10 +626,12 @@ function advanceGarbageConversion(
       ...conversion,
       nextColumn,
       convertedPanelIds,
-      nextCellAt:
-        conversion.nextCellAt + config.timing.garbageCellConvertMs,
+      nextCellAt: clockToMilliseconds(
+        millisecondsToClock(conversion.nextCellAt) +
+          millisecondsToClock(config.timing.garbageCellConvertMs),
+      ),
       releaseAt: rowComplete
-        ? state.elapsedMs + config.timing.garbageReleaseDelayMs
+        ? clockAt(state, config.timing.garbageReleaseDelayMs)
         : null,
     },
   }
@@ -704,7 +747,10 @@ function advancePanelGravity(
       }
 
       const hoveringSince = panel.animationStartedAt ?? state.elapsedMs
-      if (state.elapsedMs - hoveringSince < config.timing.fallDelayMs) {
+      if (
+        elapsedClockSince(state, hoveringSince) <
+        millisecondsToClock(config.timing.fallDelayMs)
+      ) {
         landing = row + 1
         continue
       }
@@ -848,8 +894,8 @@ function advanceChainClosure(
     state.garbage.some(
       ({ state: blockState }) => blockState === 'falling',
     ) ||
-    state.elapsedMs - state.chain.closingStartedAt <
-      config.timing.chainWindowMs
+    elapsedClockSince(state, state.chain.closingStartedAt) <
+      millisecondsToClock(config.timing.chainWindowMs)
   ) {
     return state
   }
@@ -913,7 +959,7 @@ function advanceGarbageLifecycle(
     !safeToInsert ||
     nextAttack === undefined ||
     // Held in the telegraph queue until its warning has run.
-    advanced.elapsedMs < nextAttack.readyAt
+    advanced.elapsedClock < millisecondsToClock(nextAttack.readyAt)
   ) {
     return advanced
   }
@@ -947,14 +993,14 @@ function advanceRise(
     return {
       ...state,
       riseSpeed: 0,
-      stopTimeRemainingMs: Math.max(
-        0,
-        state.stopTimeRemainingMs - config.timing.fixedStepMs,
+      stopTimeRemainingMs: subtractClock(
+        state.stopTimeRemainingMs,
+        fixedStepClockUnits(config.timing.fixedStepMs),
       ),
     }
   }
 
-  const elapsedSeconds = state.elapsedMs / 1000
+  const elapsedSeconds = state.elapsedClock / CLOCK_UNITS_PER_SECOND
   const speedIncreases = Math.floor(
     elapsedSeconds / config.rise.speedIncreaseIntervalSeconds,
   )
@@ -971,14 +1017,19 @@ function advanceRise(
   // not erase the whole buffer the way it used to.
   const stopTimeRemainingMs =
     state.manualRaise && state.stopTimeRemainingMs > 0
-      ? Math.max(
-          0,
-          state.stopTimeRemainingMs -
-            config.timing.fixedStepMs * config.rise.manualStopDrainMultiplier,
+      ? subtractClock(
+          state.stopTimeRemainingMs,
+          Math.round(
+            fixedStepClockUnits(config.timing.fixedStepMs) *
+              config.rise.manualStopDrainMultiplier,
+          ),
         )
       : state.stopTimeRemainingMs
   let riseOffset =
-    state.riseOffset + riseSpeed * (config.timing.fixedStepMs / 1000)
+    state.riseOffset +
+    riseSpeed *
+      (fixedStepClockUnits(config.timing.fixedStepMs) /
+        CLOCK_UNITS_PER_SECOND)
   let board = state.board
   let randomState = state.randomState
   let garbage = state.garbage
@@ -1039,9 +1090,14 @@ function advanceRise(
  * rather than a step past it.
  */
 function endTimedRun(state: SimulationState): SimulationState {
+  const elapsedClock =
+    state.timeLimitMs === null
+      ? state.elapsedClock
+      : millisecondsToClock(state.timeLimitMs)
   return {
     ...state,
-    elapsedMs: state.timeLimitMs ?? state.elapsedMs,
+    elapsedClock,
+    elapsedMs: clockToMilliseconds(elapsedClock),
     status: 'lost',
     endReason: 'time-up',
     manualRaise: false,
@@ -1057,25 +1113,26 @@ function fixedStep(
     return state
   }
 
+  const stepClock = fixedStepClockUnits(config.timing.fixedStepMs)
+  const elapsedClock = state.elapsedClock + stepClock
   let nextState: SimulationState = {
     ...state,
-    elapsedMs: state.elapsedMs + config.timing.fixedStepMs,
+    step: state.step + 1,
+    elapsedClock,
+    elapsedMs: clockToMilliseconds(elapsedClock),
   }
 
   if (
     nextState.timeLimitMs !== null &&
-    // The step is 16.6…ms, so accumulating a whole number of steps lands a
-    // float hair short of a round limit (2 minutes comes out 9e-13ms light).
-    // Without the slack the run would get one extra step it did not earn.
-    nextState.elapsedMs >= nextState.timeLimitMs - 1e-6
+    nextState.elapsedClock >= millisecondsToClock(nextState.timeLimitMs)
   ) {
     return endTimedRun(nextState)
   }
 
   if (
     nextState.pendingSwap !== null &&
-    nextState.elapsedMs - nextState.pendingSwap.startedAt >=
-      config.timing.swapDurationMs
+    elapsedClockSince(nextState, nextState.pendingSwap.startedAt) >=
+      millisecondsToClock(config.timing.swapDurationMs)
   ) {
     nextState = completePendingSwap(nextState)
   }
@@ -1108,6 +1165,8 @@ export function createSimulation(
     randomState: initial.randomState,
     garbageRandomState: seedToRandomState(`${seed}:garbage`),
     conversionRandomState: seedToRandomState(`${seed}:conversion`),
+    step: 0,
+    elapsedClock: 0,
     elapsedMs: 0,
     board: initial.board,
     riseOffset: 0,
@@ -1191,8 +1250,8 @@ export function requestSwap(
     state.chain !== null &&
     (state.chain.status === 'active' ||
       (state.chain.closingStartedAt !== null &&
-        state.elapsedMs - state.chain.closingStartedAt <=
-          config.timing.chainWindowMs))
+        elapsedClockSince(state, state.chain.closingStartedAt) <=
+          millisecondsToClock(config.timing.chainWindowMs)))
   const board = withPanelsById(state.board, swappedIds, (panel) => ({
     ...panel,
     state: 'swapping',
@@ -1272,7 +1331,8 @@ export function advanceSimulation(
   }
 
   const stepCount = Math.floor(
-    (deltaMs + Number.EPSILON) / config.timing.fixedStepMs,
+    (deltaMs * CLOCK_UNITS_PER_MILLISECOND + Number.EPSILON) /
+      fixedStepClockUnits(config.timing.fixedStepMs),
   )
   let nextState = state
 
@@ -1307,7 +1367,9 @@ export function simulationChecksum(state: SimulationState): string {
           panel.offsetY,
           panel.chainEligible ? 1 : 0,
           panel.chainId ?? '-',
-          panel.animationStartedAt ?? '-',
+          panel.animationStartedAt === null
+            ? '-'
+            : millisecondsToClock(panel.animationStartedAt),
         ].join(','),
     )
     .join('|')
@@ -1315,32 +1377,37 @@ export function simulationChecksum(state: SimulationState): string {
     state.randomState,
     state.garbageRandomState,
     state.conversionRandomState,
-    state.elapsedMs.toFixed(4),
+    state.step,
+    state.elapsedClock,
     state.riseOffset.toFixed(8),
     state.riseSpeed.toFixed(8),
-    state.stopTimeRemainingMs.toFixed(4),
-    state.dangerRemainingMs?.toFixed(4) ?? 'safe',
+    millisecondsToClock(state.stopTimeRemainingMs),
+    state.dangerRemainingMs === null
+      ? 'safe'
+      : millisecondsToClock(state.dangerRemainingMs),
     state.status,
     state.phase,
-    state.phaseStartedAt.toFixed(4),
+    millisecondsToClock(state.phaseStartedAt),
     state.clears
       .map(
         (group) =>
-          `${group.id},${group.phase},${group.phaseStartedAt.toFixed(4)},${group.chainId},${group.panelIds.join('.')}`,
+          `${group.id},${group.phase},${millisecondsToClock(group.phaseStartedAt)},${group.chainId},${group.panelIds.join('.')}`,
       )
       .join('|'),
     state.pendingSwap === null
       ? 'no-swap'
-      : `${state.pendingSwap.from.row},${state.pendingSwap.from.column}>${state.pendingSwap.to.row},${state.pendingSwap.to.column}@${state.pendingSwap.startedAt}`,
+      : `${state.pendingSwap.from.row},${state.pendingSwap.from.column}>${state.pendingSwap.to.row},${state.pendingSwap.to.column}@${millisecondsToClock(state.pendingSwap.startedAt)}`,
     state.chain === null
       ? 'no-chain'
       : [
           state.chain.id,
           state.chain.level,
           state.chain.status,
-          state.chain.startedAt,
-          state.chain.lastQualifyingEventAt,
-          state.chain.closingStartedAt ?? '-',
+          millisecondsToClock(state.chain.startedAt),
+          millisecondsToClock(state.chain.lastQualifyingEventAt),
+          state.chain.closingStartedAt === null
+            ? '-'
+            : millisecondsToClock(state.chain.closingStartedAt),
         ].join(','),
     state.nextAttackSequence,
     state.outgoingAttacks
@@ -1370,8 +1437,8 @@ export function simulationChecksum(state: SimulationState): string {
     state.incomingGarbage
       .map(
         (attack) =>
-          `${attack.attackId}@${attack.serverSequence}!${attack.readyAt.toFixed(
-            4,
+          `${attack.attackId}@${attack.serverSequence}!${millisecondsToClock(
+            attack.readyAt,
           )}:${attack.blocks
             .map((block) => `${block.width}x${block.height}:${block.type}`)
             .join('+')}`,
@@ -1385,8 +1452,10 @@ export function simulationChecksum(state: SimulationState): string {
           state.garbageConversion.nextColumn,
           state.garbageConversion.blockIds.join(','),
           state.garbageConversion.convertedPanelIds.join(','),
-          state.garbageConversion.nextCellAt,
-          state.garbageConversion.releaseAt ?? '-',
+          millisecondsToClock(state.garbageConversion.nextCellAt),
+          state.garbageConversion.releaseAt === null
+            ? '-'
+            : millisecondsToClock(state.garbageConversion.releaseAt),
         ].join(':'),
     panels,
     state.board.incomingRow.join(','),

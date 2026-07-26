@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "seed": "godot-conformance-garbage",
+  "configHash": "029a4f0a",
+  "steps": 420,
+  "timeLimitMs": null,
+  "inputs": [
+    {
+      "step": 100,
+      "order": 1,
+      "kind": "manual-raise",
+      "active": true
+    },
+    {
+      "step": 118,
+      "order": 0,
+      "kind": "manual-raise",
+      "active": false
+    }
+  ],
+  "attacks": [
+    {
+      "step": 0,
+      "order": 0,
+      "attackId": "garbage-1",
+      "serverSequence": 1,
+      "blocks": [
+        {
+          "width": 3,
+          "height": 1,
+          "type": "normal"
+        }
+      ]
+    },
+    {
+      "step": 100,
+      "order": 0,
+      "attackId": "garbage-2",
+      "serverSequence": 2,
+      "blocks": [
+        {
+          "width": 6,
+          "height": 2,
+          "type": "metal"
+        }
+      ]
+    }
+  ]
+}

@@ -1,4 +1,9 @@
 import { defaultGameConfig } from './config'
+import {
+  clockToMilliseconds,
+  fixedStepClockUnits,
+  millisecondsToClock,
+} from './clock'
 import type {
   AttackBlock,
   Board,
@@ -263,8 +268,11 @@ export function isSimulationState(
     isInteger(value.randomState) &&
     isInteger(value.garbageRandomState) &&
     isInteger(value.conversionRandomState) &&
+    isInteger(value.step) &&
+    isInteger(value.elapsedClock) &&
     isFiniteNumber(value.elapsedMs) &&
     value.elapsedMs >= 0 &&
+    value.elapsedMs === clockToMilliseconds(value.elapsedClock) &&
     isBoard(value.board, config) &&
     isFiniteNumber(value.riseOffset) &&
     value.riseOffset >= 0 &&
@@ -345,12 +353,33 @@ export function serializeSimulationSnapshot(
   savedAt: number,
 ): string {
   return JSON.stringify({
-    version: 3,
+    version: 4,
     scopeId,
     seed: state.seed,
     savedAt,
     state,
   })
+}
+
+function migrateVersion3State(value: unknown): unknown {
+  if (
+    !isRecord(value) ||
+    !isFiniteNumber(value.elapsedMs) ||
+    value.elapsedMs < 0
+  ) {
+    return value
+  }
+
+  const elapsedClock = millisecondsToClock(value.elapsedMs)
+  return {
+    ...value,
+    step: Math.round(
+      elapsedClock /
+        fixedStepClockUnits(defaultGameConfig.timing.fixedStepMs),
+    ),
+    elapsedClock,
+    elapsedMs: clockToMilliseconds(elapsedClock),
+  }
 }
 
 export function restoreSimulationSnapshot(
@@ -368,19 +397,26 @@ export function restoreSimulationSnapshot(
     const snapshot: unknown = JSON.parse(serialized)
     if (
       !isRecord(snapshot) ||
-      snapshot.version !== 3 ||
+      (snapshot.version !== 3 && snapshot.version !== 4) ||
       snapshot.scopeId !== options.scopeId ||
       snapshot.seed !== options.expectedSeed ||
       !isFiniteNumber(snapshot.savedAt) ||
       snapshot.savedAt > options.now + 5_000 ||
-      options.now - snapshot.savedAt > options.maxAgeMs ||
-      !isSimulationState(snapshot.state) ||
-      snapshot.state.seed !== options.expectedSeed
+      options.now - snapshot.savedAt > options.maxAgeMs
     ) {
       return null
     }
+
+    const state =
+      snapshot.version === 3
+        ? migrateVersion3State(snapshot.state)
+        : snapshot.state
+    if (!isSimulationState(state) || state.seed !== options.expectedSeed) {
+      return null
+    }
+
     return {
-      ...snapshot.state,
+      ...state,
       manualRaise: false,
     }
   } catch {

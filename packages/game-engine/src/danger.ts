@@ -1,3 +1,8 @@
+import {
+  clockToMilliseconds,
+  fixedStepClockUnits,
+  millisecondsToClock,
+} from './clock'
 import type { GameConfig, SimulationState } from './types'
 
 export function boardTouchesTop(state: SimulationState): boolean {
@@ -55,9 +60,12 @@ export function advanceDangerState(
     return state
   }
 
-  const dangerRemainingMs = Math.max(
-    0,
-    state.dangerRemainingMs - config.timing.fixedStepMs,
+  const dangerRemainingMs = clockToMilliseconds(
+    Math.max(
+      0,
+      millisecondsToClock(state.dangerRemainingMs) -
+        fixedStepClockUnits(config.timing.fixedStepMs),
+    ),
   )
 
   const toppedOut = dangerRemainingMs === 0

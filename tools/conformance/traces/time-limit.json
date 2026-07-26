@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "seed": "godot-conformance-timed",
+  "configHash": "029a4f0a",
+  "steps": 90,
+  "timeLimitMs": 1000,
+  "inputs": [
+    {
+      "step": 0,
+      "order": 0,
+      "kind": "manual-raise",
+      "active": true
+    }
+  ],
+  "attacks": []
+}

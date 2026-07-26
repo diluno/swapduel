@@ -12,6 +12,7 @@
     "start": "pnpm --filter @swapduel/server start",
     "test": "pnpm --filter @swapduel/game-engine test && pnpm --filter @swapduel/server test",
     "test:watch": "pnpm --filter @swapduel/game-engine test:watch",
+    "conformance:generate": "vitest run tools/conformance/generate-fixtures.test.ts",
     "typecheck": "pnpm -r typecheck"
   },
   "devDependencies": {

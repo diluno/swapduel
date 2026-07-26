@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "seed": "godot-conformance-swaps",
+  "configHash": "029a4f0a",
+  "steps": 360,
+  "timeLimitMs": null,
+  "inputs": [
+    {
+      "step": 0,
+      "order": 0,
+      "kind": "swap",
+      "row": 1,
+      "column": 1,
+      "direction": 1
+    },
+    {
+      "step": 12,
+      "order": 0,
+      "kind": "swap",
+      "row": 2,
+      "column": 3,
+      "direction": -1
+    },
+    {
+      "step": 30,
+      "order": 0,
+      "kind": "manual-raise",
+      "active": true
+    },
+    {
+      "step": 54,
+      "order": 0,
+      "kind": "manual-raise",
+      "active": false
+    },
+    {
+      "step": 90,
+      "order": 0,
+      "kind": "swap",
+      "row": 0,
+      "column": 4,
+      "direction": 1
+    },
+    {
+      "step": 180,
+      "order": 0,
+      "kind": "swap",
+      "row": 3,
+      "column": 2,
+      "direction": 1
+    }
+  ],
+  "attacks": []
+}

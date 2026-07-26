@@ -90,4 +90,34 @@ describe('simulation recovery validation', () => {
     ).toBeNull()
     expect(restoreSimulationSnapshot('{bad json', options)).toBeNull()
   })
+
+  it('migrates version 3 millisecond snapshots onto the integer clock', () => {
+    let state = createSimulation('legacy-snapshot')
+    for (let step = 0; step < 17; step += 1) {
+      state = stepSimulation(state)
+    }
+    const legacyState = structuredClone(state) as Partial<typeof state>
+    delete legacyState.step
+    delete legacyState.elapsedClock
+    const serialized = JSON.stringify({
+      version: 3,
+      scopeId: 'solo:legacy',
+      seed: state.seed,
+      savedAt: 1_000,
+      state: legacyState,
+    })
+
+    const restored = restoreSimulationSnapshot(serialized, {
+      scopeId: 'solo:legacy',
+      expectedSeed: state.seed,
+      now: 2_000,
+      maxAgeMs: 5_000,
+    })
+
+    expect(restored).toMatchObject({
+      step: 17,
+      elapsedClock: 850,
+      elapsedMs: 850 / 3,
+    })
+  })
 })
