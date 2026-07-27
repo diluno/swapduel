@@ -2,6 +2,7 @@ import {
   boardSnapshotSchema,
   displayNameSchema,
   estimateServerClock,
+  nativeRequestSchema,
   roomCreatePayloadSchema,
   roomErrorSchema,
   selectBestClockEstimate,
@@ -92,5 +93,47 @@ describe('network contract hardening', () => {
       offsetMs: 500,
       roundTripMs: 40,
     })
+  })
+
+  it('accepts only versioned native WebSocket request envelopes', () => {
+    const supportedEvents = [
+      'room:create',
+      'room:join',
+      'room:reconnect',
+      'player:ready',
+      'match:start',
+      'round:ready',
+      'round:next',
+      'match:rematch',
+      'board:snapshot',
+      'simulation:checksum',
+      'attack:create',
+      'attack:ack',
+      'round:topout',
+      'ping',
+    ]
+    for (const [index, event] of supportedEvents.entries()) {
+      expect(nativeRequestSchema.parse({
+        protocolVersion: 1,
+        type: 'request',
+        requestId: `request-${index}`,
+        event,
+        payload: {},
+      })).toMatchObject({ event })
+    }
+    expect(nativeRequestSchema.safeParse({
+      protocolVersion: 2,
+      type: 'request',
+      requestId: 'wrong-version',
+      event: 'room:create',
+      payload: { displayName: 'Mira' },
+    }).success).toBe(false)
+    expect(nativeRequestSchema.safeParse({
+      protocolVersion: 1,
+      type: 'request',
+      requestId: 'unknown-event',
+      event: 'admin:rooms',
+      payload: {},
+    }).success).toBe(false)
   })
 })

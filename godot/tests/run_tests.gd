@@ -16,9 +16,13 @@ const Conformance = preload("res://game/engine/conformance.gd")
 const Recovery = preload("res://game/engine/recovery.gd")
 const MainScreen = preload("res://game/main.gd")
 const BoardView = preload("res://game/presentation/board_view.gd")
+const OpponentBoardView = preload(
+	"res://game/presentation/opponent_board_view.gd"
+)
 const Impact = preload("res://game/presentation/impact.gd")
 const UiTheme = preload("res://game/presentation/ui_theme.gd")
 const GameSettings = preload("res://game/settings/settings.gd")
+const RoomClientScript = preload("res://game/network/room_client.gd")
 
 var _checks := 0
 var _failures := 0
@@ -41,7 +45,10 @@ func _initialize() -> void:
 	_test_recovery()
 	_test_board_rise_projection()
 	_test_offline_shell()
+	_test_online_recovery()
+	_test_opponent_board_view()
 	_test_native_settings()
+	_test_room_client_protocol()
 	_test_native_ui_theme()
 	_test_impact_presentation()
 	_test_conformance_initial_states()
@@ -61,6 +68,70 @@ func _test_exact_clock() -> void:
 	_check(
 		Config.milliseconds_to_clock(220) == 660,
 		"220 ms stays exact in the integer clock",
+	)
+
+
+func _test_room_client_protocol() -> void:
+	var client = RoomClientScript.new()
+	for method_name in [
+		&"create_room",
+		&"join_room",
+		&"reconnect_saved_session",
+		&"start_match",
+		&"mark_round_ready",
+		&"send_board_snapshot",
+		&"send_simulation_checksum",
+		&"send_attack",
+		&"acknowledge_attack",
+		&"report_top_out",
+		&"ready_for_next_round",
+		&"request_rematch",
+	]:
+		_check(
+			client.has_method(method_name),
+			"RoomClient exposes %s" % method_name,
+		)
+	for signal_name in [
+		&"round_prepared",
+		&"round_starting",
+		&"opponent_snapshot_received",
+		&"attack_incoming",
+		&"attack_confirmed",
+		&"clock_synchronized",
+		&"opponent_snapshot_cleared",
+		&"desync_detected",
+		&"round_ended",
+		&"match_ended",
+		&"match_paused",
+		&"match_resuming",
+	]:
+		_check(
+			client.has_signal(signal_name),
+			"RoomClient exposes %s signal" % signal_name,
+		)
+	client.free()
+	var event_frame := RoomClientScript.decode_frame(JSON.stringify({
+		"protocolVersion": 1,
+		"type": "event",
+		"event": "room:state",
+		"payload": {"roomId": "room-1"},
+	}))
+	_check(
+		String(event_frame.get("event", "")) == "room:state",
+		"RoomClient accepts versioned native event frames",
+	)
+	_check(
+		RoomClientScript.decode_frame(JSON.stringify({
+			"protocolVersion": 2,
+			"type": "event",
+			"event": "room:state",
+			"payload": {},
+		})).is_empty(),
+		"RoomClient rejects incompatible protocol versions",
+	)
+	_check(
+		RoomClientScript.decode_frame("not json").is_empty(),
+		"RoomClient rejects malformed JSON frames",
 	)
 	_check(
 		Config.clock_to_milliseconds(50) == 1000.0 / 60.0,
@@ -911,6 +982,11 @@ func _test_offline_shell() -> void:
 			and shell._help_panel.get_combined_minimum_size().y <= 520.0,
 		"how-to-play content stays inside the visible native card",
 	)
+	_check(
+		shell._home_panel.size.y <= 520.0
+			and shell._home_panel.get_combined_minimum_size().y <= 520.0,
+		"mode selection including private duel stays inside its card",
+	)
 	shell._start_round(&"time-trial")
 	_check(
 		shell.state.status == &"playing"
@@ -988,6 +1064,197 @@ func _test_offline_shell() -> void:
 	_check(
 		not shell._settings_panel.visible and shell._home_panel.visible,
 		"offline shell returns from settings to mode selection",
+	)
+	shell._show_online()
+	shell._online_code_input.text = "ab-12cd!"
+	shell._normalize_room_code(shell._online_code_input.text)
+	_check(
+		shell._online_panel.visible
+			and shell._online_panel.size.y <= 460.0
+			and shell._online_panel.get_combined_minimum_size().y <= 460.0
+			and shell._online_name_input.max_length == 20
+			and shell._online_code_input.text == "AB12CD",
+		"private-room card is compact and normalizes codes (%s, %.1f, %d, %s)"
+		% [
+			shell._online_panel.visible,
+			shell._online_panel.size.y,
+			shell._online_name_input.max_length,
+			shell._online_code_input.text,
+		],
+	)
+	shell._on_online_round_prepared({
+		"protocolVersion": 1,
+		"roomId": "room-1",
+		"matchId": "match-1",
+		"roundId": "round-1",
+		"roundNumber": 1,
+		"roundSeed": "online-seed",
+	})
+	var online_snapshot := shell._online_snapshot()
+	_check(
+		shell._mode == shell.MODE_ONLINE
+			and shell.state.seed == "online-seed"
+			and shell.state.status == &"paused"
+			and online_snapshot["sequence"] == 0
+			and online_snapshot["cells"].size() > 0,
+		"online round preparation creates a paused server-seeded board",
+	)
+	_check(
+		shell._opponent_board_view.visible
+			and shell.board_view.size.x
+				< shell._opponent_board_view.position.x
+					- shell.board_view.position.x
+			and shell._opponent_board_frame.position.x
+				> shell._board_frame.position.x,
+		"online duel lays out a read-only rival board beside the local board",
+	)
+	shell._on_online_match_paused({
+		"forfeitAt": 50_000.0,
+	})
+	_check(
+		shell.state.status == &"paused"
+			and shell._network_panel.visible
+			and shell._network_status_label.text == "RIVAL DISCONNECTED"
+			and shell._online_forfeit_at_ms == 50_000.0,
+		"online disconnect presents a blocking safely-paused state",
+	)
+	shell._on_online_match_resuming({
+		"resumeAt": 60_000.0,
+	})
+	_check(
+		shell.state.status == &"paused"
+			and shell._network_panel.visible
+			and shell._network_kicker_label.text == "RIVAL RECONNECTED"
+			and shell._online_resume_at_ms == 60_000.0
+			and shell._online_forfeit_at_ms < 0.0,
+		"online reconnect stays paused behind the synchronized resume gate",
+	)
+	shell._on_online_desync_detected({"simulationStep": 240})
+	_check(
+		shell._online_desync_step == 240
+			and shell._title_label.text.contains("SYNC WARNING"),
+		"online consistency diagnostics remain visibly surfaced",
+	)
+	shell._online_foreground_syncing = true
+	shell._on_online_clock_synchronized(4.0, 12.0)
+	_check(
+		not shell._online_foreground_syncing,
+		"fresh clock samples release the foreground synchronization gate",
+	)
+	shell.free()
+
+
+func _test_opponent_board_view() -> void:
+	var view := OpponentBoardView.new()
+	var accepted := view.set_snapshot({
+		"sequence": 4,
+		"riseOffset": 0.25,
+		"dangerRemainingMs": 900,
+		"cells": [{
+			"row": 2,
+			"column": 3,
+			"type": "heart",
+			"state": "idle",
+		}],
+		"garbage": [{
+			"id": 8,
+			"type": "metal",
+			"column": 0,
+			"row": 5,
+			"width": 3,
+			"height": 1,
+			"state": "idle",
+		}],
+	})
+	var rival_state = view.simulation_state
+	_check(
+		accepted
+			and view.last_sequence == 4
+			and rival_state.board.get_panel(2, 3).type == &"heart"
+			and rival_state.garbage.size() == 1
+			and rival_state.rise_offset == 0.25
+			and rival_state.danger_remaining
+				== 900 * Config.CLOCK_UNITS_PER_MILLISECOND,
+		"opponent board projects network snapshots into the native renderer",
+	)
+	_check(
+		not view.set_snapshot({"sequence": 3})
+			and view.last_sequence == 4,
+		"opponent board rejects stale snapshots",
+	)
+	view.clear_snapshot()
+	_check(
+		view.simulation_state == null and view.last_sequence == -1,
+		"opponent board clears between online rounds",
+	)
+	view.free()
+
+
+func _test_online_recovery() -> void:
+	var shell := MainScreen.new()
+	var preparation := {
+		"protocolVersion": 1,
+		"roomId": "room-1",
+		"matchId": "match-1",
+		"roundId": "round-2",
+		"roundNumber": 2,
+		"roundSeed": "online-recovery-seed",
+	}
+	shell._mode = shell.MODE_ONLINE
+	shell.state = Simulation.create_simulation(
+		String(preparation["roundSeed"]),
+	)
+	for _step in 245:
+		Simulation.step_simulation(shell.state)
+	shell._online_snapshot_sequence = 41
+	shell._online_checksum_sequence = 2
+	var serialized := shell._encode_online_recovery_for(
+		30_000,
+		preparation,
+		"player-1",
+	)
+	var recovered := shell._decode_online_recovery_snapshot(
+		serialized,
+		31_000,
+		preparation,
+		"player-1",
+	)
+	_check(
+		not recovered.is_empty()
+			and Simulation.simulation_checksum(recovered["state"])
+				== Simulation.simulation_checksum(shell.state)
+			and recovered["snapshotSequence"] == 41
+			and recovered["checksumSequence"] == 2,
+		"online recovery preserves scoped simulation and protocol sequences",
+	)
+	_check(
+		shell._decode_online_recovery_snapshot(
+			serialized,
+			31_000,
+			preparation,
+			"another-player",
+		).is_empty(),
+		"online recovery rejects a different room player",
+	)
+	var wrong_round: Dictionary = preparation.duplicate(true)
+	wrong_round["roundId"] = "round-3"
+	_check(
+		shell._decode_online_recovery_snapshot(
+			serialized,
+			31_000,
+			wrong_round,
+			"player-1",
+		).is_empty(),
+		"online recovery rejects a different active round",
+	)
+	_check(
+		shell._decode_online_recovery_snapshot(
+			serialized,
+			30_000 + shell.ONLINE_RECOVERY_MAX_AGE_MS + 1,
+			preparation,
+			"player-1",
+		).is_empty(),
+		"online recovery rejects snapshots older than the reconnect window",
 	)
 	shell.free()
 

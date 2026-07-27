@@ -21,6 +21,11 @@ config/icon="res://assets/icons/swapduel.svg"
 
 Audio="*res://game/audio/audio.gd"
 GameSettings="*res://game/settings/settings.gd"
+RoomClient="*res://game/network/room_client.gd"
+
+[swapduel]
+
+network/websocket_url="wss://swapduel.dil.uno/native"
 
 [display]
 

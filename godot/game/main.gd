@@ -1,7 +1,12 @@
 extends Control
 
 const Simulation = preload("res://game/engine/simulation.gd")
+const Types = preload("res://game/engine/types.gd")
+const Garbage = preload("res://game/engine/garbage.gd")
 const BoardView = preload("res://game/presentation/board_view.gd")
+const OpponentBoardView = preload(
+	"res://game/presentation/opponent_board_view.gd"
+)
 const Config = preload("res://game/engine/config.gd")
 const Recovery = preload("res://game/engine/recovery.gd")
 const UiTheme = preload("res://game/presentation/ui_theme.gd")
@@ -9,11 +14,15 @@ const Backdrop = preload("res://game/presentation/backdrop.gd")
 
 const MODE_ENDLESS: StringName = &"endless"
 const MODE_TIME_TRIAL: StringName = &"time-trial"
+const MODE_ONLINE: StringName = &"online"
 const PROGRESS_PATH := "user://progress.cfg"
 const RECOVERY_PATH := "user://solo-recovery.json"
 const RECOVERY_SCOPE := "native:solo"
+const ONLINE_RECOVERY_PATH := "user://online-recovery.json"
+const ONLINE_RECOVERY_SCOPE_PREFIX := "native:online"
 const RECOVERY_INTERVAL_STEPS := 120
 const RECOVERY_MAX_AGE_MS := 7 * 24 * 60 * 60 * 1000
+const ONLINE_RECOVERY_MAX_AGE_MS := 35_000
 const BOARD_FRAME_INSET := 10.0
 
 var state
@@ -31,6 +40,13 @@ var _chain_chip: PanelContainer
 var _chain_status_label: Label
 var _hud_panel: PanelContainer
 var _board_frame: PanelContainer
+var _opponent_board_frame: PanelContainer
+var _opponent_board_label: Label
+var _opponent_board_view
+var _network_panel: PanelContainer
+var _network_kicker_label: Label
+var _network_status_label: Label
+var _network_note_label: Label
 var _controls_panel: PanelContainer
 var _control_row: HBoxContainer
 var _pause_button: Button
@@ -40,6 +56,20 @@ var _home_panel: PanelContainer
 var _home_best_label: Label
 var _help_panel: PanelContainer
 var _settings_panel: PanelContainer
+var _online_panel: PanelContainer
+var _online_form: VBoxContainer
+var _online_lobby: VBoxContainer
+var _online_name_input: LineEdit
+var _online_code_input: LineEdit
+var _online_status_label: Label
+var _online_connection_label: Label
+var _online_room_code_label: Label
+var _online_players_label: Label
+var _online_create_button: Button
+var _online_join_button: Button
+var _online_reconnect_button: Button
+var _online_ready_button: Button
+var _online_start_button: Button
 var _sound_button: Button
 var _motion_button: Button
 var _battery_button: Button
@@ -65,10 +95,20 @@ var _last_recovery_step := -1
 var _overlay_tween: Tween
 var _button_tweens: Dictionary = {}
 var _hud_danger := false
+var _online_round_start_at_ms := -1.0
+var _online_resume_at_ms := -1.0
+var _online_snapshot_sequence := 0
+var _online_checksum_sequence := 0
+var _online_topout_reported := false
+var _online_forfeit_at_ms := -1.0
+var _online_foreground_syncing := false
+var _online_was_backgrounded := false
+var _online_desync_step := -1
 
 
 func _ready() -> void:
 	_build_interface()
+	_connect_room_client()
 	var settings = _settings()
 	if settings != null:
 		settings.changed.connect(_apply_settings)
@@ -81,7 +121,12 @@ func _ready() -> void:
 
 
 func _physics_process(_delta: float) -> void:
-	if state == null or state.status != &"playing":
+	if state == null:
+		return
+	if _mode == MODE_ONLINE:
+		_update_online_round_gate()
+		_apply_online_attacks()
+	if state.status != &"playing":
 		return
 	var falling_before: Array[int] = []
 	for block in state.garbage:
@@ -90,6 +135,9 @@ func _physics_process(_delta: float) -> void:
 	var rise_before: float = state.rise_offset
 	var next_panel_id_before: int = state.board.next_panel_id
 	Simulation.step_simulation(state)
+	if _mode == MODE_ONLINE:
+		_flush_online_attacks()
+		_send_online_periodic_state()
 	if (
 		state.rise_offset < rise_before
 		and state.board.next_panel_id - next_panel_id_before
@@ -116,6 +164,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			_hide_help()
 		elif _settings_panel.visible:
 			_hide_settings()
+		elif _online_panel.visible:
+			_hide_online()
 		elif _pause_panel.visible:
 			_toggle_pause()
 		elif _result_panel.visible:
@@ -164,12 +214,26 @@ func _unhandled_input(event: InputEvent) -> void:
 func _notification(what: int) -> void:
 	if what in [NOTIFICATION_APPLICATION_FOCUS_OUT, NOTIFICATION_APPLICATION_PAUSED]:
 		_stop_manual_raise()
+		if _round_active and state != null and _mode == MODE_ONLINE:
+			_online_was_backgrounded = true
+			_online_foreground_syncing = true
+			if state.status == &"playing":
+				Simulation.set_paused(state, true)
+			_title_label.text = "DUEL  •  RECONNECTING"
+			_raise_button.disabled = true
+			_save_recovery()
+			return
 		if _round_active and state != null and state.status == &"playing":
 			Simulation.set_paused(state, true)
 			_pause_button.text = "RESUME"
 			_reveal_panel(_pause_panel)
 			_update_hud()
 			_save_recovery()
+	elif what in [
+		NOTIFICATION_APPLICATION_FOCUS_IN,
+		NOTIFICATION_APPLICATION_RESUMED,
+	]:
+		_resume_online_from_background()
 
 
 func _exit_tree() -> void:
@@ -252,6 +316,41 @@ func _build_interface() -> void:
 	board_view.swap_requested.connect(_request_swap)
 	add_child(board_view)
 
+	_opponent_board_frame = PanelContainer.new()
+	_opponent_board_frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_opponent_board_frame.add_theme_stylebox_override(
+		"panel",
+		UiTheme.panel_style(
+			UiTheme.WHITE,
+			18,
+			UiTheme.PEACH_DEEP,
+			2,
+			4,
+		),
+	)
+	add_child(_opponent_board_frame)
+
+	_opponent_board_label = Label.new()
+	_opponent_board_label.text = "RIVAL"
+	_opponent_board_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_opponent_board_label.text_overrun_behavior = (
+		TextServer.OVERRUN_TRIM_ELLIPSIS
+	)
+	_opponent_board_label.add_theme_font_override(
+		"font",
+		UiTheme.body_font(900),
+	)
+	_opponent_board_label.add_theme_font_size_override("font_size", 10)
+	_opponent_board_label.add_theme_color_override(
+		"font_color",
+		UiTheme.INK_FAINT,
+	)
+	add_child(_opponent_board_label)
+
+	_opponent_board_view = OpponentBoardView.new()
+	add_child(_opponent_board_view)
+	_set_opponent_board_visible(false)
+
 	_controls_panel = PanelContainer.new()
 	var controls_style := UiTheme.panel_style(
 		Color(1.0, 1.0, 1.0, 0.94),
@@ -304,7 +403,7 @@ func _build_interface() -> void:
 	add_child(_home_panel)
 	var home_box := VBoxContainer.new()
 	home_box.alignment = BoxContainer.ALIGNMENT_CENTER
-	home_box.add_theme_constant_override("separation", 12)
+	home_box.add_theme_constant_override("separation", 8)
 	_home_panel.add_child(home_box)
 	var home_eyebrow := Label.new()
 	home_eyebrow.text = "NATIVE PUZZLE DUEL"
@@ -333,7 +432,10 @@ func _build_interface() -> void:
 	home_note.add_theme_font_size_override("font_size", 14)
 	home_note.add_theme_color_override("font_color", UiTheme.INK_SOFT)
 	home_box.add_child(home_note)
-	var endless_button := _make_button("PLAY ENDLESS", &"primary")
+	var online_button := _make_button("PRIVATE DUEL", &"primary")
+	online_button.pressed.connect(_show_online)
+	home_box.add_child(online_button)
+	var endless_button := _make_button("PLAY ENDLESS")
 	endless_button.pressed.connect(_start_round.bind(MODE_ENDLESS))
 	home_box.add_child(endless_button)
 	var trial_button := _make_button("TWO-MINUTE TRIAL")
@@ -410,6 +512,137 @@ func _build_interface() -> void:
 	var help_done := _make_button("GOT IT", &"primary")
 	help_done.pressed.connect(_hide_help)
 	help_box.add_child(help_done)
+
+	_online_panel = PanelContainer.new()
+	var online_style := _make_overlay_style()
+	online_style.content_margin_left = 22
+	online_style.content_margin_right = 22
+	online_style.content_margin_top = 20
+	online_style.content_margin_bottom = 20
+	_online_panel.add_theme_stylebox_override("panel", online_style)
+	_online_panel.visible = false
+	add_child(_online_panel)
+	var online_root := VBoxContainer.new()
+	online_root.alignment = BoxContainer.ALIGNMENT_BEGIN
+	online_root.add_theme_constant_override("separation", 6)
+	_online_panel.add_child(online_root)
+	var online_eyebrow := Label.new()
+	online_eyebrow.text = "TWO PLAYERS  ·  PRIVATE ROOM"
+	online_eyebrow.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	online_eyebrow.add_theme_font_override("font", UiTheme.body_font(900))
+	online_eyebrow.add_theme_font_size_override("font_size", 10)
+	online_eyebrow.add_theme_color_override("font_color", UiTheme.CORAL_DARK)
+	online_root.add_child(online_eyebrow)
+	var online_title := Label.new()
+	online_title.text = "PLAY ONLINE"
+	online_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	online_title.add_theme_font_override("font", UiTheme.display_font(700))
+	online_title.add_theme_font_size_override("font_size", 30)
+	online_title.add_theme_color_override("font_color", UiTheme.INK)
+	online_root.add_child(online_title)
+	_online_connection_label = Label.new()
+	_online_connection_label.text = "NOT CONNECTED"
+	_online_connection_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_online_connection_label.add_theme_font_override(
+		"font",
+		UiTheme.body_font(900),
+	)
+	_online_connection_label.add_theme_font_size_override("font_size", 9)
+	_online_connection_label.add_theme_color_override(
+		"font_color",
+		UiTheme.INK_FAINT,
+	)
+	online_root.add_child(_online_connection_label)
+	_online_status_label = Label.new()
+	_online_status_label.text = "Create a room or enter a friend's code."
+	_online_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	# Autowrap reports one line per character while this hidden card still has
+	# zero width, permanently inflating the container's minimum height.
+	_online_status_label.autowrap_mode = TextServer.AUTOWRAP_OFF
+	_online_status_label.text_overrun_behavior = (
+		TextServer.OVERRUN_TRIM_ELLIPSIS
+	)
+	_online_status_label.custom_minimum_size.y = 24.0
+	_online_status_label.add_theme_font_size_override("font_size", 11)
+	_online_status_label.add_theme_color_override(
+		"font_color",
+		UiTheme.INK_SOFT,
+	)
+	online_root.add_child(_online_status_label)
+
+	_online_form = VBoxContainer.new()
+	_online_form.add_theme_constant_override("separation", 7)
+	online_root.add_child(_online_form)
+	_online_name_input = _make_text_input("YOUR NAME", 20)
+	_online_name_input.text_submitted.connect(
+		func(_text: String) -> void: _create_online_room(),
+	)
+	_online_form.add_child(_online_name_input)
+	# Allow pasted codes with spaces or separators; normalization still caps at 6.
+	_online_code_input = _make_text_input("ROOM CODE", 12)
+	_online_code_input.text_changed.connect(_normalize_room_code)
+	_online_code_input.text_submitted.connect(
+		func(_text: String) -> void: _join_online_room(),
+	)
+	_online_form.add_child(_online_code_input)
+	var online_actions := HBoxContainer.new()
+	online_actions.add_theme_constant_override("separation", 7)
+	_online_form.add_child(online_actions)
+	_online_create_button = _make_button("CREATE", &"primary", true, true)
+	_online_create_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_online_create_button.pressed.connect(_create_online_room)
+	online_actions.add_child(_online_create_button)
+	_online_join_button = _make_button("JOIN", &"secondary", true, true)
+	_online_join_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_online_join_button.pressed.connect(_join_online_room)
+	online_actions.add_child(_online_join_button)
+	_online_reconnect_button = _make_button("RECONNECT SAVED ROOM", &"ghost")
+	_online_reconnect_button.pressed.connect(_reconnect_online_room)
+	_online_form.add_child(_online_reconnect_button)
+
+	_online_lobby = VBoxContainer.new()
+	_online_lobby.visible = false
+	_online_lobby.add_theme_constant_override("separation", 7)
+	online_root.add_child(_online_lobby)
+	var room_caption := Label.new()
+	room_caption.text = "ROOM CODE"
+	room_caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	room_caption.add_theme_font_override("font", UiTheme.body_font(900))
+	room_caption.add_theme_font_size_override("font_size", 9)
+	room_caption.add_theme_color_override("font_color", UiTheme.INK_FAINT)
+	_online_lobby.add_child(room_caption)
+	_online_room_code_label = Label.new()
+	_online_room_code_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_online_room_code_label.add_theme_font_override(
+		"font",
+		UiTheme.display_font(700),
+	)
+	_online_room_code_label.add_theme_font_size_override("font_size", 34)
+	_online_room_code_label.add_theme_color_override(
+		"font_color",
+		UiTheme.CORAL_DEEP,
+	)
+	_online_lobby.add_child(_online_room_code_label)
+	_online_players_label = Label.new()
+	_online_players_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_online_players_label.custom_minimum_size.y = 48.0
+	_online_players_label.add_theme_font_override("font", UiTheme.body_font(700))
+	_online_players_label.add_theme_font_size_override("font_size", 12)
+	_online_players_label.add_theme_color_override(
+		"font_color",
+		UiTheme.INK_SOFT,
+	)
+	_online_lobby.add_child(_online_players_label)
+	_online_ready_button = _make_button("I'M READY")
+	_online_ready_button.pressed.connect(_toggle_online_ready)
+	_online_lobby.add_child(_online_ready_button)
+	_online_start_button = _make_button("START DUEL", &"primary")
+	_online_start_button.pressed.connect(_start_online_match)
+	_online_lobby.add_child(_online_start_button)
+
+	var online_back := _make_button("BACK", &"ghost")
+	online_back.pressed.connect(_hide_online)
+	online_root.add_child(online_back)
 
 	_settings_panel = PanelContainer.new()
 	_settings_panel.add_theme_stylebox_override(
@@ -527,6 +760,51 @@ func _build_interface() -> void:
 	_pause_resume_button.pressed.connect(_toggle_pause)
 	pause_box.add_child(_pause_resume_button)
 
+	_network_panel = PanelContainer.new()
+	_network_panel.add_theme_stylebox_override(
+		"panel",
+		_make_overlay_style(),
+	)
+	_network_panel.visible = false
+	add_child(_network_panel)
+	var network_box := VBoxContainer.new()
+	network_box.alignment = BoxContainer.ALIGNMENT_CENTER
+	network_box.add_theme_constant_override("separation", 9)
+	_network_panel.add_child(network_box)
+	_network_kicker_label = Label.new()
+	_network_kicker_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_network_kicker_label.add_theme_font_override(
+		"font",
+		UiTheme.body_font(900),
+	)
+	_network_kicker_label.add_theme_font_size_override("font_size", 10)
+	_network_kicker_label.add_theme_color_override(
+		"font_color",
+		UiTheme.CORAL_DARK,
+	)
+	network_box.add_child(_network_kicker_label)
+	_network_status_label = Label.new()
+	_network_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_network_status_label.add_theme_font_override(
+		"font",
+		UiTheme.display_font(700),
+	)
+	_network_status_label.add_theme_font_size_override("font_size", 26)
+	_network_status_label.add_theme_color_override(
+		"font_color",
+		UiTheme.INK,
+	)
+	network_box.add_child(_network_status_label)
+	_network_note_label = Label.new()
+	_network_note_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_network_note_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_network_note_label.add_theme_font_size_override("font_size", 12)
+	_network_note_label.add_theme_color_override(
+		"font_color",
+		UiTheme.INK_SOFT,
+	)
+	network_box.add_child(_network_note_label)
+
 
 func _layout_interface() -> void:
 	if board_view == null:
@@ -587,15 +865,66 @@ func _layout_interface() -> void:
 		120.0,
 		control_y - board_top - 12.0,
 	)
-	var board_width := minf(
-		viewport_size.x - left - right - 18.0,
-		board_available_height / 2.0,
-	)
+	var board_region_width := viewport_size.x - left - right
+	var board_width: float
+	if _mode == MODE_ONLINE:
+		var opponent_width := clampf(board_region_width * 0.235, 76.0, 104.0)
+		var opponent_inset := 6.0
+		var board_gap := 12.0
+		board_width = minf(
+			board_available_height / 2.0,
+			board_region_width
+				- BOARD_FRAME_INSET * 2.0
+				- board_gap
+				- opponent_width
+				- opponent_inset * 2.0,
+		)
+		var group_width := (
+			board_width
+			+ BOARD_FRAME_INSET * 2.0
+			+ board_gap
+			+ opponent_width
+			+ opponent_inset * 2.0
+		)
+		var group_left := (viewport_size.x - group_width) / 2.0
+		board_view.position = Vector2(
+			group_left + BOARD_FRAME_INSET,
+			board_top,
+		)
+		var opponent_frame_position := Vector2(
+			group_left + board_width + BOARD_FRAME_INSET * 2.0 + board_gap,
+			board_top + 22.0,
+		)
+		_opponent_board_label.position = Vector2(
+			opponent_frame_position.x,
+			board_top,
+		)
+		_opponent_board_label.size = Vector2(
+			opponent_width + opponent_inset * 2.0,
+			18.0,
+		)
+		_opponent_board_frame.position = opponent_frame_position
+		_opponent_board_frame.size = Vector2(
+			opponent_width + opponent_inset * 2.0,
+			opponent_width * 2.0 + opponent_inset * 2.0,
+		)
+		_opponent_board_view.position = (
+			opponent_frame_position + Vector2.ONE * opponent_inset
+		)
+		_opponent_board_view.size = Vector2(
+			opponent_width,
+			opponent_width * 2.0,
+		)
+	else:
+		board_width = minf(
+			board_region_width - 18.0,
+			board_available_height / 2.0,
+		)
+		board_view.position = Vector2(
+			(viewport_size.x - board_width) / 2.0,
+			board_top,
+		)
 	board_view.size = Vector2(board_width, board_width * 2.0)
-	board_view.position = Vector2(
-		(viewport_size.x - board_width) / 2.0,
-		board_top,
-	)
 	_board_frame.position = (
 		board_view.position - Vector2.ONE * BOARD_FRAME_INSET
 	)
@@ -612,9 +941,18 @@ func _layout_interface() -> void:
 		(viewport_size.x - result_size.x) / 2.0,
 		top + (bottom - top - result_size.y) / 2.0,
 	)
+	var network_size := Vector2(
+		minf(300.0, viewport_size.x - left - right - 8.0),
+		172.0,
+	)
+	_network_panel.size = network_size
+	_network_panel.position = Vector2(
+		(viewport_size.x - network_size.x) / 2.0,
+		top + (bottom - top - network_size.y) / 2.0,
+	)
 	var home_size := Vector2(
 		minf(334.0, viewport_size.x - left - right),
-		minf(480.0, bottom - top - 16.0),
+		minf(520.0, bottom - top - 16.0),
 	)
 	_home_panel.size = home_size
 	_home_panel.position = Vector2(
@@ -629,6 +967,20 @@ func _layout_interface() -> void:
 	_help_panel.position = Vector2(
 		(viewport_size.x - help_size.x) / 2.0,
 		top + (bottom - top - help_size.y) / 2.0,
+	)
+	var online_height := clampf(
+		_online_panel.get_combined_minimum_size().y,
+		350.0,
+		460.0,
+	)
+	var online_size := Vector2(
+		minf(334.0, viewport_size.x - left - right),
+		minf(online_height, bottom - top - 16.0),
+	)
+	_online_panel.size = online_size
+	_online_panel.position = Vector2(
+		(viewport_size.x - online_size.x) / 2.0,
+		top + (bottom - top - online_size.y) / 2.0,
 	)
 	var settings_size := Vector2(
 		minf(334.0, viewport_size.x - left - right),
@@ -654,6 +1006,10 @@ func _start_round(mode: StringName) -> void:
 	_stop_manual_raise()
 	_clear_recovery()
 	_mode = mode
+	_set_opponent_board_visible(false)
+	_opponent_board_view.clear_snapshot()
+	_network_panel.visible = false
+	_layout_interface()
 	var seed := "godot-%s-%d" % [String(mode), Time.get_ticks_usec()]
 	var time_limit_ms := (
 		Config.TIME_TRIAL_DURATION_MS
@@ -667,6 +1023,7 @@ func _start_round(mode: StringName) -> void:
 	board_view.set_cursor_position(0, 0, false)
 	_home_panel.visible = false
 	_help_panel.visible = false
+	_online_panel.visible = false
 	_settings_panel.visible = false
 	_result_panel.visible = false
 	_pause_panel.visible = false
@@ -683,14 +1040,34 @@ func _start_round(mode: StringName) -> void:
 
 
 func _restart_current_round() -> void:
+	if _mode == MODE_ONLINE:
+		var client = _room_client()
+		if client == null:
+			return
+		_result_retry_button.disabled = true
+		if client.match_result.is_empty():
+			client.ready_for_next_round()
+		else:
+			client.request_rematch()
+		return
 	_start_round(_mode)
 
 
 func _show_home() -> void:
 	_stop_manual_raise()
+	var leaving_online_match := _mode == MODE_ONLINE
+	if leaving_online_match:
+		var online_client = _room_client()
+		if online_client != null:
+			online_client.disconnect_from_server()
+			online_client.clear_saved_session()
 	_round_active = false
 	_clear_recovery()
 	_mode = MODE_ENDLESS
+	_set_opponent_board_visible(false)
+	_opponent_board_view.clear_snapshot()
+	_network_panel.visible = false
+	_layout_interface()
 	state = Simulation.create_simulation(
 		"godot-menu-%d" % Time.get_ticks_usec(),
 	)
@@ -708,6 +1085,7 @@ func _show_home() -> void:
 	_update_settings_buttons()
 	_reveal_panel(_home_panel)
 	_help_panel.visible = false
+	_online_panel.visible = false
 	_settings_panel.visible = false
 	_result_panel.visible = false
 	_pause_panel.visible = false
@@ -730,7 +1108,7 @@ func _request_swap(row: int, column: int, direction: int) -> void:
 
 
 func _toggle_pause() -> void:
-	if state == null or state.status == &"lost":
+	if state == null or state.status == &"lost" or _mode == MODE_ONLINE:
 		return
 	var pause: bool = state.status == &"playing"
 	Simulation.set_paused(state, pause)
@@ -772,7 +1150,9 @@ func _update_hud() -> void:
 	_score_label.text = "%d" % state.score
 	var chain_level: int = 1 if state.chain == null else state.chain.level
 	var mode_title := (
-		"TIME TRIAL" if _mode == MODE_TIME_TRIAL else "ENDLESS"
+		"TIME TRIAL"
+		if _mode == MODE_TIME_TRIAL
+		else "DUEL" if _mode == MODE_ONLINE else "ENDLESS"
 	)
 	var danger: bool = state.danger_remaining >= 0
 	_title_label.text = (
@@ -811,12 +1191,25 @@ func _update_hud() -> void:
 		_pause_button.disabled = true
 		_raise_button.disabled = true
 	else:
-		_pause_button.disabled = false
+		_pause_button.disabled = _mode == MODE_ONLINE
 		_raise_button.disabled = state.danger_remaining >= 0
 
 
 func _finish_round() -> void:
 	if _result_reported:
+		return
+	if _mode == MODE_ONLINE:
+		_result_reported = true
+		_online_topout_reported = true
+		_round_active = false
+		_clear_file(ONLINE_RECOVERY_PATH)
+		_stop_manual_raise()
+		var client = _room_client()
+		if client != null:
+			client.report_top_out()
+		_title_label.text = "DUEL  •  WAITING FOR RESULT"
+		_pause_button.disabled = true
+		_raise_button.disabled = true
 		return
 	_result_reported = true
 	_round_active = false
@@ -884,6 +1277,7 @@ func _toggle_sound() -> void:
 func _show_settings() -> void:
 	_home_panel.visible = false
 	_help_panel.visible = false
+	_online_panel.visible = false
 	_result_panel.visible = false
 	_pause_panel.visible = false
 	_reveal_panel(_settings_panel)
@@ -900,6 +1294,7 @@ func _hide_settings() -> void:
 
 func _show_help() -> void:
 	_home_panel.visible = false
+	_online_panel.visible = false
 	_settings_panel.visible = false
 	_result_panel.visible = false
 	_pause_panel.visible = false
@@ -911,6 +1306,692 @@ func _hide_help() -> void:
 	_help_panel.visible = false
 	_reveal_panel(_home_panel)
 	_set_game_chrome_visible(false, false)
+
+
+func _connect_room_client() -> void:
+	var client = _room_client()
+	if client == null:
+		return
+	client.connection_state_changed.connect(_on_online_connection_changed)
+	client.room_session_changed.connect(_on_online_session_changed)
+	client.room_state_changed.connect(_on_online_room_state_changed)
+	client.room_error.connect(_on_online_error)
+	client.round_prepared.connect(_on_online_round_prepared)
+	client.round_starting.connect(_on_online_round_starting)
+	client.opponent_snapshot_received.connect(_on_online_opponent_snapshot)
+	client.opponent_snapshot_cleared.connect(_on_online_opponent_snapshot_cleared)
+	client.clock_synchronized.connect(_on_online_clock_synchronized)
+	client.desync_detected.connect(_on_online_desync_detected)
+	client.round_ended.connect(_on_online_round_ended)
+	client.match_ended.connect(_on_online_match_ended)
+	client.match_paused.connect(_on_online_match_paused)
+	client.match_resuming.connect(_on_online_match_resuming)
+
+
+func _show_online() -> void:
+	_home_panel.visible = false
+	_help_panel.visible = false
+	_settings_panel.visible = false
+	_result_panel.visible = false
+	_pause_panel.visible = false
+	_reveal_panel(_online_panel)
+	_set_game_chrome_visible(false, false)
+	_online_name_input.text = String(
+		_progress.get_value("online", "display_name", ""),
+	)
+	_update_online_panel()
+
+
+func _hide_online() -> void:
+	_online_panel.visible = false
+	_reveal_panel(_home_panel)
+	_set_game_chrome_visible(false, false)
+
+
+func _create_online_room() -> void:
+	var display_name := _online_name_input.text.strip_edges()
+	if display_name.is_empty() or display_name.length() > 20:
+		_set_online_status("Enter a name between 1 and 20 characters.", true)
+		return
+	_remember_online_name(display_name)
+	_set_online_status("Creating room…")
+	_set_online_actions_disabled(true)
+	var client = _room_client()
+	if client != null:
+		client.create_room(display_name)
+
+
+func _join_online_room() -> void:
+	var display_name := _online_name_input.text.strip_edges()
+	var room_code := _online_code_input.text.strip_edges().to_upper()
+	if display_name.is_empty() or display_name.length() > 20:
+		_set_online_status("Enter a name between 1 and 20 characters.", true)
+		return
+	if room_code.length() != 6:
+		_set_online_status("Enter the six-character room code.", true)
+		return
+	_remember_online_name(display_name)
+	_set_online_status("Joining %s…" % room_code)
+	_set_online_actions_disabled(true)
+	var client = _room_client()
+	if client != null:
+		client.join_room(room_code, display_name)
+
+
+func _reconnect_online_room() -> void:
+	var client = _room_client()
+	if client == null or not client.has_saved_session():
+		_set_online_status("There is no saved room to reconnect.", true)
+		return
+	_set_online_status("Reconnecting to saved room…")
+	_set_online_actions_disabled(true)
+	client.reconnect_saved_session()
+
+
+func _toggle_online_ready() -> void:
+	var client = _room_client()
+	if client == null:
+		return
+	var player := _online_player()
+	if player.is_empty():
+		return
+	client.set_ready(not bool(player.get("ready", false)))
+
+
+func _start_online_match() -> void:
+	var client = _room_client()
+	if client == null or _online_start_button.disabled:
+		return
+	_set_online_status("Preparing the duel…")
+	client.start_match()
+
+
+func _on_online_connection_changed(_state: StringName) -> void:
+	var client = _room_client()
+	if (
+		_mode == MODE_ONLINE
+		and state != null
+		and state.status != &"lost"
+		and client != null
+		and client.connection_state != client.STATE_CONNECTED
+	):
+		Simulation.set_paused(state, true)
+		_title_label.text = "DUEL  •  RECONNECTING"
+		_raise_button.disabled = true
+		_opponent_board_label.text = "RECONNECTING"
+		_show_network_overlay(
+			"CONNECTION PAUSED",
+			"RECONNECTING…",
+			"Your board is safely paused.",
+		)
+	elif _mode == MODE_ONLINE:
+		_update_opponent_board_label()
+	_update_online_panel()
+
+
+func _on_online_session_changed(_session: Dictionary) -> void:
+	_set_online_actions_disabled(false)
+	_update_online_panel()
+
+
+func _on_online_room_state_changed(_room_state: Dictionary) -> void:
+	_set_online_actions_disabled(false)
+	if _mode == MODE_ONLINE:
+		_update_opponent_board_label()
+	_update_online_panel()
+
+
+func _on_online_error(error: Dictionary) -> void:
+	_set_online_actions_disabled(false)
+	_set_online_status(
+		String(error.get("message", "The online request failed.")),
+		true,
+	)
+
+
+func _update_online_panel() -> void:
+	if _online_panel == null:
+		return
+	var client = _room_client()
+	if client == null:
+		_online_connection_label.text = "ONLINE SERVICE UNAVAILABLE"
+		_online_connection_label.add_theme_color_override(
+			"font_color",
+			UiTheme.DANGER,
+		)
+		return
+	match client.connection_state:
+		client.STATE_CONNECTED:
+			_online_connection_label.text = "CONNECTED"
+			_online_connection_label.add_theme_color_override(
+				"font_color",
+				Color("#5a9f79"),
+			)
+		client.STATE_CONNECTING:
+			_online_connection_label.text = "CONNECTING…"
+			_online_connection_label.add_theme_color_override(
+				"font_color",
+				UiTheme.CORAL_DARK,
+			)
+		_:
+			_online_connection_label.text = "NOT CONNECTED"
+			_online_connection_label.add_theme_color_override(
+				"font_color",
+				UiTheme.INK_FAINT,
+			)
+
+	var active_room: Dictionary = client.room_state
+	var has_room := (
+		not active_room.is_empty()
+		and not String(active_room.get("roomCode", "")).is_empty()
+	)
+	_online_form.visible = not has_room
+	_online_lobby.visible = has_room
+	_online_reconnect_button.visible = (
+		not has_room and client.has_saved_session()
+	)
+	if not has_room:
+		if _online_status_label.text.is_empty():
+			_set_online_status("Create a room or enter a friend's code.")
+		_layout_interface()
+		return
+
+	_online_room_code_label.text = String(active_room.get("roomCode", ""))
+	var player_lines: Array[String] = []
+	for player in active_room.get("players", []):
+		if not player is Dictionary:
+			continue
+		var marker := "✓" if bool(player.get("ready", false)) else "○"
+		var connection := "" if bool(player.get("connected", false)) else "  OFFLINE"
+		player_lines.push_back(
+			"%s  %s%s"
+			% [marker, String(player.get("displayName", "Player")), connection],
+		)
+	while player_lines.size() < 2:
+		player_lines.push_back("○  Waiting for player…")
+	_online_players_label.text = "\n".join(player_lines)
+	var own_player := _online_player()
+	var own_ready := bool(own_player.get("ready", false))
+	_online_ready_button.text = "NOT READY" if own_ready else "I'M READY"
+	_online_ready_button.disabled = (
+		own_player.is_empty()
+		or String(active_room.get("status", "")) != "waiting"
+	)
+	var is_host := (
+		String(active_room.get("hostPlayerId", ""))
+		== String(client.room_session.get("playerId", ""))
+	)
+	var players: Array = active_room.get("players", [])
+	var all_ready := (
+		players.size() == 2
+		and players.all(
+			func(player: Variant) -> bool:
+				return (
+					player is Dictionary
+					and bool(player.get("connected", false))
+					and bool(player.get("ready", false))
+				),
+		)
+	)
+	_online_start_button.visible = is_host
+	_online_start_button.disabled = (
+		not all_ready
+		or String(active_room.get("status", "")) != "waiting"
+	)
+	if String(active_room.get("status", "")) == "starting":
+		_set_online_status("Both boards are preparing…")
+	elif players.size() < 2:
+		_set_online_status("Share the room code and wait for player two.")
+	elif not all_ready:
+		_set_online_status("Both players need to be ready.")
+	elif is_host:
+		_set_online_status("Ready! Start whenever you like.")
+	else:
+		_set_online_status("Ready! Waiting for the host to start.")
+	_layout_interface()
+
+
+func _online_player() -> Dictionary:
+	var client = _room_client()
+	if client == null:
+		return {}
+	var player_id := String(client.room_session.get("playerId", ""))
+	for player in client.room_state.get("players", []):
+		if player is Dictionary and String(player.get("playerId", "")) == player_id:
+			return player
+	return {}
+
+
+func _set_online_status(message: String, error := false) -> void:
+	_online_status_label.text = message
+	_online_status_label.add_theme_color_override(
+		"font_color",
+		UiTheme.DANGER if error else UiTheme.INK_SOFT,
+	)
+
+
+func _set_online_actions_disabled(disabled: bool) -> void:
+	_online_create_button.disabled = disabled
+	_online_join_button.disabled = disabled
+	_online_reconnect_button.disabled = disabled
+
+
+func _normalize_room_code(value: String) -> void:
+	var normalized := ""
+	for character in value.to_upper():
+		if (
+			character >= "A" and character <= "Z"
+			or character >= "0" and character <= "9"
+		):
+			normalized += character
+		if normalized.length() >= 6:
+			break
+	if normalized == value:
+		return
+	_online_code_input.text = normalized
+	_online_code_input.caret_column = normalized.length()
+
+
+func _remember_online_name(display_name: String) -> void:
+	_progress.set_value("online", "display_name", display_name)
+	_save_progress()
+
+
+func _on_online_round_prepared(preparation: Dictionary) -> void:
+	_mode = MODE_ONLINE
+	_opponent_board_view.clear_snapshot()
+	_set_opponent_board_visible(true)
+	_update_opponent_board_label()
+	_layout_interface()
+	_clear_recovery()
+	state = Simulation.create_simulation(String(preparation.get("roundSeed", "")))
+	Simulation.set_paused(state, true)
+	_cursor = Vector2i(0, 0)
+	board_view.set_simulation_state(state)
+	board_view.clear_selection()
+	board_view.set_cursor_position(0, 0, false)
+	for panel in [
+		_home_panel,
+		_help_panel,
+		_online_panel,
+		_settings_panel,
+		_result_panel,
+		_pause_panel,
+	]:
+		panel.visible = false
+	_set_game_chrome_visible(true, true)
+	_round_active = true
+	_result_reported = false
+	_online_topout_reported = false
+	_online_round_start_at_ms = -1.0
+	_online_resume_at_ms = -1.0
+	_online_forfeit_at_ms = -1.0
+	_online_foreground_syncing = false
+	_online_was_backgrounded = false
+	_online_desync_step = -1
+	_online_snapshot_sequence = 0
+	_online_checksum_sequence = 0
+	_last_clear_at = -1
+	_last_recovery_step = state.step
+	_title_label.text = "DUEL  •  PREPARING"
+	_pause_button.text = "LIVE"
+	_pause_button.disabled = true
+	_raise_button.disabled = true
+	_restart_button.text = "LEAVE"
+	_result_retry_button.disabled = false
+	_update_hud()
+	_title_label.text = "DUEL  •  PREPARING"
+	_pause_button.disabled = true
+	_raise_button.disabled = true
+	_network_panel.visible = false
+	var client = _room_client()
+	if client != null:
+		client.mark_round_ready(preparation)
+
+
+func _on_online_opponent_snapshot(snapshot: Dictionary) -> void:
+	if _mode != MODE_ONLINE:
+		return
+	_opponent_board_view.set_snapshot(snapshot)
+
+
+func _on_online_opponent_snapshot_cleared() -> void:
+	if _mode == MODE_ONLINE:
+		_opponent_board_view.clear_snapshot()
+
+
+func _on_online_clock_synchronized(
+	_offset_ms: float,
+	_round_trip_ms: float,
+) -> void:
+	if _mode != MODE_ONLINE:
+		return
+	_online_foreground_syncing = false
+	_update_online_round_gate()
+
+
+func _on_online_desync_detected(diagnostic: Dictionary) -> void:
+	if _mode != MODE_ONLINE:
+		return
+	_online_desync_step = int(diagnostic.get("simulationStep", -1))
+	_title_label.text = "DUEL  •  SYNC WARNING"
+
+
+func _update_opponent_board_label() -> void:
+	var client = _room_client()
+	if client == null:
+		_opponent_board_label.text = "RIVAL"
+		return
+	var own_id := String(client.room_session.get("playerId", ""))
+	for player in client.room_state.get("players", []):
+		if (
+			player is Dictionary
+			and String(player.get("playerId", "")) != own_id
+		):
+			var display_name := String(
+				player.get("displayName", "RIVAL"),
+			).to_upper()
+			_opponent_board_label.text = (
+				display_name
+				if bool(player.get("connected", false))
+				else "%s • OFFLINE" % display_name
+			)
+			return
+	_opponent_board_label.text = "RIVAL"
+
+
+func _on_online_round_starting(starting: Dictionary) -> void:
+	_online_round_start_at_ms = float(starting.get("startAt", -1.0))
+	_online_resume_at_ms = -1.0
+	if state != null and state.status != &"lost":
+		Simulation.set_paused(state, true)
+
+
+func _on_online_round_ended(result: Dictionary) -> void:
+	if _mode != MODE_ONLINE:
+		return
+	_round_active = false
+	_clear_file(ONLINE_RECOVERY_PATH)
+	var client = _room_client()
+	var own_id := (
+		"" if client == null else String(client.room_session.get("playerId", ""))
+	)
+	var winner_id := String(result.get("winnerPlayerId", ""))
+	_result_kicker_label.text = (
+		"DRAW"
+		if winner_id.is_empty()
+		else "ROUND WON" if winner_id == own_id else "ROUND LOST"
+	)
+	_result_label.text = _format_online_scores(result.get("scores", []), own_id)
+	_result_retry_button.text = "NEXT ROUND"
+	_result_retry_button.disabled = false
+	_pause_panel.visible = false
+	_network_panel.visible = false
+	_set_game_chrome_visible(true, false)
+	_reveal_panel(_result_panel)
+
+
+func _on_online_match_ended(result: Dictionary) -> void:
+	if _mode != MODE_ONLINE:
+		return
+	_clear_file(ONLINE_RECOVERY_PATH)
+	var client = _room_client()
+	var own_id := (
+		"" if client == null else String(client.room_session.get("playerId", ""))
+	)
+	_result_kicker_label.text = (
+		"MATCH WON"
+		if String(result.get("winnerPlayerId", "")) == own_id
+		else "MATCH LOST"
+	)
+	_result_label.text = _format_online_scores(result.get("scores", []), own_id)
+	_result_retry_button.text = "REMATCH"
+	_result_retry_button.disabled = false
+	_network_panel.visible = false
+	_reveal_panel(_result_panel)
+
+
+func _on_online_match_paused(pause: Dictionary) -> void:
+	if _mode != MODE_ONLINE or state == null or state.status == &"lost":
+		return
+	Simulation.set_paused(state, true)
+	_online_resume_at_ms = -1.0
+	_online_forfeit_at_ms = float(pause.get("forfeitAt", -1.0))
+	_title_label.text = "DUEL  •  OPPONENT DISCONNECTED"
+	_raise_button.disabled = true
+	_show_network_overlay(
+		"CONNECTION PAUSED",
+		"RIVAL DISCONNECTED",
+		"Waiting for them to return. Your board is safely paused.",
+	)
+
+
+func _on_online_match_resuming(resume: Dictionary) -> void:
+	if _mode != MODE_ONLINE or state == null or state.status == &"lost":
+		return
+	Simulation.set_paused(state, true)
+	_online_resume_at_ms = float(resume.get("resumeAt", -1.0))
+	_online_forfeit_at_ms = -1.0
+	_show_network_overlay(
+		"RIVAL RECONNECTED",
+		"GET READY",
+		"Both boards will resume together.",
+	)
+
+
+func _resume_online_from_background() -> void:
+	if (
+		not _online_was_backgrounded
+		or _mode != MODE_ONLINE
+		or not _round_active
+	):
+		return
+	_online_was_backgrounded = false
+	_online_foreground_syncing = true
+	_show_network_overlay(
+		"BACK ONLINE",
+		"SYNCING CLOCK…",
+		"Checking the match before play resumes.",
+	)
+	var client = _room_client()
+	if client == null:
+		_online_foreground_syncing = false
+		return
+	client.connect_to_server(true)
+	client.sample_clock()
+
+
+func _show_network_overlay(
+	kicker: String,
+	status_text: String,
+	note: String,
+) -> void:
+	if _network_panel == null or _mode != MODE_ONLINE:
+		return
+	_network_kicker_label.text = kicker
+	_network_status_label.text = status_text
+	_network_note_label.text = note
+	_network_panel.visible = true
+
+
+func _update_online_round_gate() -> void:
+	if state == null or state.status == &"lost":
+		return
+	var client = _room_client()
+	if client == null or client.connection_state != client.STATE_CONNECTED:
+		Simulation.set_paused(state, true)
+		_title_label.text = "DUEL  •  RECONNECTING"
+		_show_network_overlay(
+			"CONNECTION PAUSED",
+			"RECONNECTING…",
+			"Your board is safely paused.",
+		)
+		return
+	if _online_foreground_syncing:
+		Simulation.set_paused(state, true)
+		_show_network_overlay(
+			"BACK ONLINE",
+			"SYNCING CLOCK…",
+			"Checking the match before play resumes.",
+		)
+		return
+	if _online_forfeit_at_ms > 0.0 and _online_resume_at_ms < 0.0:
+		Simulation.set_paused(state, true)
+		var wait_seconds := maxi(
+			0,
+			ceili(
+				(_online_forfeit_at_ms - float(client.server_time_ms()))
+					/ 1000.0,
+			),
+		)
+		_network_status_label.text = "WAITING  %ds" % wait_seconds
+		return
+	var gate_at := maxf(_online_round_start_at_ms, _online_resume_at_ms)
+	if gate_at < 0.0:
+		Simulation.set_paused(state, true)
+		return
+	var remaining_ms: float = gate_at - float(client.server_time_ms())
+	if remaining_ms > 0.0:
+		Simulation.set_paused(state, true)
+		_title_label.text = "DUEL  •  %d" % maxi(1, ceili(remaining_ms / 1000.0))
+		_show_network_overlay(
+			"RIVAL RECONNECTED",
+			"%d" % maxi(1, ceili(remaining_ms / 1000.0)),
+			"Both boards will resume together.",
+		)
+		return
+	if state.status == &"paused":
+		Simulation.set_paused(state, false)
+		_title_label.text = (
+			"DUEL  •  SYNC WARNING"
+			if _online_desync_step >= 0
+			else "DUEL"
+		)
+		_raise_button.disabled = state.danger_remaining >= 0
+		_network_panel.visible = false
+
+
+func _apply_online_attacks() -> void:
+	var client = _room_client()
+	if client == null or state == null:
+		return
+	var applied := false
+	for attack in client.drain_incoming_attacks():
+		var blocks: Array[Types.AttackBlock] = []
+		for encoded_block in attack.get("blocks", []):
+			if encoded_block is Dictionary:
+				blocks.push_back(Types.AttackBlock.new(
+					int(encoded_block.get("width", 1)),
+					int(encoded_block.get("height", 1)),
+					StringName(String(encoded_block.get("type", "normal"))),
+				))
+		var incoming := Types.IncomingGarbageAttack.new(
+			String(attack.get("attackId", "")),
+			int(attack.get("serverSequence", -1)),
+			blocks,
+		)
+		if Garbage.enqueue_incoming_garbage(state, incoming):
+			client.acknowledge_attack(attack)
+			applied = true
+	if applied:
+		_save_recovery()
+
+
+func _flush_online_attacks() -> void:
+	var client = _room_client()
+	if client == null or state.outgoing_attacks.is_empty():
+		return
+	var attacks: Array = state.outgoing_attacks.duplicate()
+	state.outgoing_attacks.clear()
+	for attack in attacks:
+		var blocks: Array[Dictionary] = []
+		for block in attack.blocks:
+			blocks.push_back(block.to_dictionary())
+		client.send_attack({
+			"attackId": "%s:%s:%d" % [
+				String(client.round_preparation.get("roundId", "")),
+				String(client.room_session.get("playerId", "")),
+				attack.sequence,
+			],
+			"localSequence": attack.sequence,
+			"kind": String(attack.kind),
+			"blocks": blocks,
+		})
+	_save_recovery()
+
+
+func _send_online_periodic_state() -> void:
+	var client = _room_client()
+	if client == null:
+		return
+	if state.step % 6 == 0:
+		_online_snapshot_sequence += 1
+		client.send_board_snapshot(_online_snapshot())
+	if state.step % 120 == 0:
+		_online_checksum_sequence += 1
+		client.send_simulation_checksum(
+			_online_checksum_sequence,
+			state.step,
+			Simulation.simulation_checksum(state),
+		)
+
+
+func _online_snapshot() -> Dictionary:
+	var cells: Array[Dictionary] = []
+	for panel in state.board.cells:
+		if panel != null:
+			cells.push_back({
+				"row": panel.row,
+				"column": panel.column,
+				"type": String(panel.type),
+				"state": String(panel.state),
+			})
+	var garbage: Array[Dictionary] = []
+	for block in state.garbage:
+		garbage.push_back({
+			"id": block.id,
+			"type": String(block.type),
+			"column": block.column,
+			"row": block.row,
+			"width": block.width,
+			"height": block.height,
+			"state": String(block.state),
+		})
+	var incoming: Array[Dictionary] = []
+	for attack in state.incoming_garbage:
+		var blocks: Array[Dictionary] = []
+		for block in attack.blocks:
+			blocks.push_back(block.to_dictionary())
+		incoming.push_back({
+			"serverSequence": attack.server_sequence,
+			"blocks": blocks,
+		})
+	return {
+		"sequence": _online_snapshot_sequence,
+		"riseOffset": state.rise_offset,
+		"dangerRemainingMs": (
+			null
+			if state.danger_remaining < 0
+			else float(state.danger_remaining) / Config.CLOCK_UNITS_PER_MILLISECOND
+		),
+		"chainLevel": 0 if state.chain == null else state.chain.level,
+		"cells": cells,
+		"garbage": garbage,
+		"incomingGarbage": incoming,
+	}
+
+
+func _format_online_scores(scores: Array, own_id: String) -> String:
+	var own_wins := 0
+	var opponent_wins := 0
+	for score in scores:
+		if not score is Dictionary:
+			continue
+		if String(score.get("playerId", "")) == own_id:
+			own_wins = int(score.get("wins", 0))
+		else:
+			opponent_wins = int(score.get("wins", 0))
+	return "%d — %d" % [own_wins, opponent_wins]
 
 
 func _toggle_reduced_motion() -> void:
@@ -938,6 +2019,10 @@ func _apply_settings() -> void:
 	var settings = _settings()
 	if board_view != null:
 		board_view.set_reduced_motion(
+			false if settings == null else bool(settings.reduced_motion),
+		)
+	if _opponent_board_view != null:
+		_opponent_board_view.set_reduced_motion(
 			false if settings == null else bool(settings.reduced_motion),
 		)
 	if settings != null and bool(settings.reduced_motion):
@@ -1004,6 +2089,12 @@ func _settings():
 	return get_tree().root.get_node_or_null("GameSettings")
 
 
+func _room_client():
+	if not is_inside_tree():
+		return null
+	return get_tree().root.get_node_or_null("RoomClient")
+
+
 func _format_elapsed(clock_units: int) -> String:
 	var total_seconds := floori(
 		float(clock_units)
@@ -1045,6 +2136,12 @@ func _save_progress() -> void:
 
 
 func _try_restore_round() -> bool:
+	if _try_restore_online_round():
+		return true
+	return _try_restore_solo_round()
+
+
+func _try_restore_solo_round() -> bool:
 	if not recovery_enabled or not FileAccess.file_exists(RECOVERY_PATH):
 		return false
 	var serialized := FileAccess.get_file_as_string(RECOVERY_PATH)
@@ -1061,6 +2158,7 @@ func _try_restore_round() -> bool:
 	board_view.set_cursor_position(0, 0, false)
 	_home_panel.visible = false
 	_help_panel.visible = false
+	_online_panel.visible = false
 	_settings_panel.visible = false
 	_result_panel.visible = false
 	_reveal_panel(_pause_panel)
@@ -1082,6 +2180,86 @@ func _try_restore_round() -> bool:
 	return true
 
 
+func _try_restore_online_round() -> bool:
+	if (
+		not recovery_enabled
+		or not FileAccess.file_exists(ONLINE_RECOVERY_PATH)
+	):
+		return false
+	var client = _room_client()
+	if (
+		client == null
+		or not client.has_saved_session()
+		or client.round_preparation.is_empty()
+	):
+		_clear_file(ONLINE_RECOVERY_PATH)
+		return false
+	var serialized := FileAccess.get_file_as_string(ONLINE_RECOVERY_PATH)
+	var recovered := _decode_online_recovery_snapshot(
+		serialized,
+		_now_ms(),
+		client.round_preparation,
+		String(client.room_session.get("playerId", "")),
+	)
+	if recovered.is_empty():
+		_clear_file(ONLINE_RECOVERY_PATH)
+		return false
+
+	state = recovered["state"]
+	_mode = MODE_ONLINE
+	Simulation.set_paused(state, true)
+	board_view.set_simulation_state(state)
+	board_view.clear_selection()
+	board_view.set_cursor_position(0, 0, false)
+	_opponent_board_view.clear_snapshot()
+	_set_opponent_board_visible(true)
+	for panel in [
+		_home_panel,
+		_help_panel,
+		_online_panel,
+		_settings_panel,
+		_result_panel,
+		_pause_panel,
+	]:
+		panel.visible = false
+	_set_game_chrome_visible(true, true)
+	_round_active = true
+	_result_reported = false
+	_online_topout_reported = false
+	_online_round_start_at_ms = float(
+		client.round_start.get("startAt", -1.0),
+	)
+	_online_resume_at_ms = -1.0
+	_online_forfeit_at_ms = -1.0
+	_online_foreground_syncing = true
+	_online_was_backgrounded = false
+	_online_desync_step = -1
+	_online_snapshot_sequence = int(recovered["snapshotSequence"])
+	_online_checksum_sequence = int(recovered["checksumSequence"])
+	_last_clear_at = (
+		-1
+		if state.last_clear_event == null
+		else state.last_clear_event.occurred_at
+	)
+	_last_recovery_step = state.step
+	_title_label.text = "DUEL  •  RECOVERED"
+	_pause_button.text = "LIVE"
+	_pause_button.disabled = true
+	_raise_button.disabled = true
+	_restart_button.text = "LEAVE"
+	_update_opponent_board_label()
+	_layout_interface()
+	_update_hud()
+	_show_network_overlay(
+		"ROUND RECOVERED",
+		"RECONNECTING…",
+		"Checking the saved board with the active room.",
+	)
+	client.connect_to_server(true)
+	client.mark_round_ready(client.round_preparation)
+	return true
+
+
 func _save_recovery() -> void:
 	if (
 		not recovery_enabled
@@ -1090,10 +2268,17 @@ func _save_recovery() -> void:
 		or state.status == &"lost"
 	):
 		return
-	var serialized := _encode_recovery_snapshot(_now_ms())
+	var serialized := (
+		_encode_online_recovery_snapshot(_now_ms())
+		if _mode == MODE_ONLINE
+		else _encode_recovery_snapshot(_now_ms())
+	)
 	if serialized.is_empty():
 		return
-	var file := FileAccess.open(RECOVERY_PATH, FileAccess.WRITE)
+	var path := (
+		ONLINE_RECOVERY_PATH if _mode == MODE_ONLINE else RECOVERY_PATH
+	)
+	var file := FileAccess.open(path, FileAccess.WRITE)
 	if file == null:
 		return
 	file.store_string(serialized)
@@ -1101,12 +2286,19 @@ func _save_recovery() -> void:
 
 
 func _clear_recovery() -> void:
-	if not recovery_enabled or not FileAccess.file_exists(RECOVERY_PATH):
+	if not recovery_enabled:
+		return
+	_clear_file(RECOVERY_PATH)
+	_clear_file(ONLINE_RECOVERY_PATH)
+	_last_recovery_step = -1
+
+
+func _clear_file(path: String) -> void:
+	if not FileAccess.file_exists(path):
 		return
 	DirAccess.remove_absolute(
-		ProjectSettings.globalize_path(RECOVERY_PATH),
+		ProjectSettings.globalize_path(path),
 	)
-	_last_recovery_step = -1
 
 
 func _encode_recovery_snapshot(saved_at_ms: int) -> String:
@@ -1150,6 +2342,108 @@ func _decode_recovery_snapshot(
 		"mode": mode,
 		"state": restored,
 	}
+
+
+func _encode_online_recovery_snapshot(saved_at_ms: int) -> String:
+	var client = _room_client()
+	if (
+		state == null
+		or _mode != MODE_ONLINE
+		or client == null
+		or client.round_preparation.is_empty()
+	):
+		return ""
+	return _encode_online_recovery_for(
+		saved_at_ms,
+		client.round_preparation,
+		String(client.room_session.get("playerId", "")),
+	)
+
+
+func _encode_online_recovery_for(
+	saved_at_ms: int,
+	preparation: Dictionary,
+	player_id: String,
+) -> String:
+	var match_id := String(preparation.get("matchId", ""))
+	var round_id := String(preparation.get("roundId", ""))
+	var round_seed := String(preparation.get("roundSeed", ""))
+	if (
+		state == null
+		or match_id.is_empty()
+		or round_id.is_empty()
+		or round_seed.is_empty()
+		or player_id.is_empty()
+		or state.seed != round_seed
+	):
+		return ""
+	var serialized := Recovery.serialize_simulation_snapshot(
+		state,
+		_online_recovery_scope(match_id, round_id),
+		saved_at_ms,
+	)
+	var root = JSON.parse_string(serialized)
+	if not root is Dictionary:
+		return ""
+	root["mode"] = String(MODE_ONLINE)
+	root["matchId"] = match_id
+	root["roundId"] = round_id
+	root["playerId"] = player_id
+	root["snapshotSequence"] = _online_snapshot_sequence
+	root["checksumSequence"] = _online_checksum_sequence
+	return JSON.stringify(root, "", true, true)
+
+
+func _decode_online_recovery_snapshot(
+	serialized: String,
+	now_ms: int,
+	preparation: Dictionary,
+	player_id: String,
+) -> Dictionary:
+	var root = JSON.parse_string(serialized)
+	if not root is Dictionary or root.get("mode") != String(MODE_ONLINE):
+		return {}
+	var match_id := String(preparation.get("matchId", ""))
+	var round_id := String(preparation.get("roundId", ""))
+	var round_seed := String(preparation.get("roundSeed", ""))
+	if (
+		match_id.is_empty()
+		or round_id.is_empty()
+		or round_seed.is_empty()
+		or player_id.is_empty()
+		or root.get("matchId") != match_id
+		or root.get("roundId") != round_id
+		or root.get("playerId") != player_id
+	):
+		return {}
+	var restored = Recovery.restore_simulation_snapshot(
+		serialized,
+		_online_recovery_scope(match_id, round_id),
+		round_seed,
+		now_ms,
+		ONLINE_RECOVERY_MAX_AGE_MS,
+	)
+	if restored == null or restored.status == &"lost":
+		return {}
+	return {
+		"state": restored,
+		"snapshotSequence": maxi(
+			int(root.get("snapshotSequence", 0)),
+			restored.step / 6,
+		),
+		"checksumSequence": maxi(
+			int(root.get("checksumSequence", 0)),
+			restored.step / 120,
+		),
+	}
+
+
+func _online_recovery_scope(match_id: String, round_id: String) -> String:
+	return "%s:%s:%s" % [
+		ONLINE_RECOVERY_SCOPE_PREFIX,
+		match_id,
+		round_id,
+	]
 
 
 func _now_ms() -> int:
@@ -1198,6 +2492,12 @@ func _set_game_chrome_visible(
 	_pause_button.visible = controls_visible
 	_raise_button.visible = controls_visible
 	_restart_button.visible = controls_visible
+
+
+func _set_opponent_board_visible(visible: bool) -> void:
+	_opponent_board_frame.visible = visible
+	_opponent_board_label.visible = visible
+	_opponent_board_view.visible = visible
 
 
 func _reveal_panel(panel: Control) -> void:
@@ -1263,9 +2563,10 @@ func _reset_interface_motion() -> void:
 			tween.kill()
 	_button_tweens.clear()
 	for panel in [
-		_home_panel,
-		_help_panel,
-		_settings_panel,
+			_home_panel,
+			_help_panel,
+			_online_panel,
+			_settings_panel,
 		_result_panel,
 		_pause_panel,
 	]:
@@ -1423,6 +2724,35 @@ func _make_overlay_style() -> StyleBoxFlat:
 	style.content_margin_top = 26
 	style.content_margin_bottom = 26
 	return style
+
+
+func _make_text_input(placeholder: String, maximum_length: int) -> LineEdit:
+	var input := LineEdit.new()
+	input.placeholder_text = placeholder
+	input.max_length = maximum_length
+	input.clear_button_enabled = true
+	input.custom_minimum_size = Vector2(0.0, 44.0)
+	input.add_theme_font_override("font", UiTheme.body_font(800))
+	input.add_theme_font_size_override("font_size", 14)
+	input.add_theme_color_override("font_color", UiTheme.INK)
+	input.add_theme_color_override("font_placeholder_color", UiTheme.INK_FAINT)
+	input.add_theme_color_override("caret_color", UiTheme.CORAL_DARK)
+	input.add_theme_color_override("selection_color", UiTheme.CORAL_SOFT)
+	var normal := UiTheme.panel_style(
+		Color("#fffaf5"),
+		18,
+		Color("#f1d9c8"),
+		1,
+	)
+	normal.content_margin_left = 16
+	normal.content_margin_right = 16
+	var focus := normal.duplicate() as StyleBoxFlat
+	focus.border_color = UiTheme.CORAL
+	focus.set_border_width_all(2)
+	input.add_theme_stylebox_override("normal", normal)
+	input.add_theme_stylebox_override("focus", focus)
+	input.add_theme_stylebox_override("read_only", normal)
+	return input
 
 
 func _make_button(

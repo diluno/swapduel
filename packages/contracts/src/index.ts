@@ -248,6 +248,36 @@ export const pongSchema = z.object({
   serverTimestamp: z.number().finite().nonnegative(),
 }).strict()
 
+/**
+ * Native clients use a small JSON envelope over a plain WebSocket. Socket.IO
+ * keeps using its existing event framing; both transports carry the same
+ * validated event payloads.
+ */
+export const nativeClientEventSchema = z.enum([
+  'room:create',
+  'room:join',
+  'room:reconnect',
+  'player:ready',
+  'match:start',
+  'round:ready',
+  'round:next',
+  'match:rematch',
+  'board:snapshot',
+  'simulation:checksum',
+  'attack:create',
+  'attack:ack',
+  'round:topout',
+  'ping',
+])
+
+export const nativeRequestSchema = z.object({
+  protocolVersion: z.literal(PROTOCOL_VERSION),
+  type: z.literal('request'),
+  requestId: id,
+  event: nativeClientEventSchema,
+  payload: z.unknown(),
+}).strict()
+
 export const simulationChecksumReportSchema = z.object({
   protocolVersion: z.literal(PROTOCOL_VERSION),
   matchId: id,
@@ -358,6 +388,8 @@ export type MatchStartPayload = z.infer<typeof matchStartPayloadSchema>
 export type RoundPreparation = z.infer<typeof roundPreparationSchema>
 export type RoundReadyPayload = z.infer<typeof roundReadyPayloadSchema>
 export type RoundStarting = z.infer<typeof roundStartingSchema>
+export type NativeClientEvent = z.infer<typeof nativeClientEventSchema>
+export type NativeRequest = z.infer<typeof nativeRequestSchema>
 export type RoundTopOut = z.infer<typeof roundTopOutSchema>
 export type MatchScore = z.infer<typeof matchScoreSchema>
 export type RoundEnded = z.infer<typeof roundEndedSchema>

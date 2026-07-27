@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import { createServer } from 'node:http'
+import { createServer, type IncomingMessage } from 'node:http'
 import { isIP } from 'node:net'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -20,14 +20,23 @@ import {
   roomJoinPayloadSchema,
   roomReconnectPayloadSchema,
   simulationChecksumReportSchema,
+  type AttackAck,
+  type AttackEvent,
+  type BoardSnapshot,
   type LeaderboardPage,
+  type MatchRematchPayload,
+  type MatchStartPayload,
+  type NextRoundReadyPayload,
   type RoomError,
   type RoomSession,
   type RoomState,
   type RoundPreparation,
+  type RoundReadyPayload,
   type RoundStarting,
+  type RoundTopOut,
   type OrderedAttackEvent,
   type Pong,
+  type SimulationChecksumReport,
   type SimulationDesync,
 } from '@swapduel/contracts'
 import cors from 'cors'
@@ -41,6 +50,11 @@ import {
   type RoundResolution,
 } from './rooms/room-store'
 import { FixedWindowRateLimiter } from './security/rate-limiter'
+import {
+  createNativeWebSocketTransport,
+  type NativeRequestContext,
+} from './realtime/native-websocket'
+import { RealtimeHub } from './realtime/realtime-hub'
 
 const port = Number.parseInt(process.env.PORT ?? '3001', 10)
 const allowedOrigin = process.env.APP_ORIGIN ?? 'http://localhost:3000'
@@ -190,6 +204,7 @@ const io = new Server(httpServer, {
   cors: { origin: allowedOrigin },
   maxHttpBufferSize: 64 * 1024,
 })
+const realtime = new RealtimeHub()
 const rooms = new RoomStore()
 const topOutTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const disconnectTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -248,6 +263,14 @@ const KNOWN_CLIENT_EVENTS = new Set([
   'round:topout',
   'ping',
 ])
+const USER_FACING_NATIVE_ERROR_EVENTS = new Set([
+  'room:create',
+  'room:join',
+  'player:ready',
+  'match:start',
+  'round:ready',
+  'attack:create',
+])
 
 type SocketResult<T> =
   | { ok: true; data: T }
@@ -274,15 +297,31 @@ function playerTimerKey(roomId: string, playerId: string): string {
   return `${roomId}:${playerId}`
 }
 
-function getClientAddress(socket: Socket): string {
-  if (!trustProxy) return socket.handshake.address
-  const forwarded = socket.handshake.headers['x-forwarded-for']
+function resolveClientAddress(
+  fallbackAddress: string,
+  forwarded: string | string[] | undefined,
+): string {
+  if (!trustProxy) return fallbackAddress
   const firstAddress = (
     Array.isArray(forwarded) ? forwarded[0] : forwarded?.split(',')[0]
   )?.trim()
   return firstAddress !== undefined && isIP(firstAddress) !== 0
     ? firstAddress
-    : socket.handshake.address
+    : fallbackAddress
+}
+
+function getClientAddress(socket: Socket): string {
+  return resolveClientAddress(
+    socket.handshake.address,
+    socket.handshake.headers['x-forwarded-for'],
+  )
+}
+
+function getNativeClientAddress(request: IncomingMessage): string {
+  return resolveClientAddress(
+    request.socket.remoteAddress ?? 'unknown',
+    request.headers['x-forwarded-for'],
+  )
 }
 
 function rateLimitError(retryAfterMs: number): RoomError {
@@ -293,18 +332,329 @@ function rateLimitError(retryAfterMs: number): RoomError {
   }
 }
 
+function createRoom(displayName: string, connectionId: string): RoomSession {
+  const session = rooms.create(displayName, connectionId)
+  realtime.join(connectionId, session.roomState.roomId)
+  realtime.emitToConnection(connectionId, 'room:created', session)
+  realtime.emitToRoom(
+    session.roomState.roomId,
+    'room:state',
+    session.roomState,
+  )
+  return session
+}
+
+function joinRoom(
+  roomCode: string,
+  displayName: string,
+  connectionId: string,
+): RoomSession {
+  const session = rooms.join(roomCode, displayName, connectionId)
+  realtime.join(connectionId, session.roomState.roomId)
+  realtime.emitToConnection(connectionId, 'room:joined', session)
+  realtime.emitToRoom(
+    session.roomState.roomId,
+    'room:state',
+    session.roomState,
+  )
+  return session
+}
+
+function updateReadyState(
+  roomId: string,
+  playerId: string,
+  reconnectToken: string,
+  ready: boolean,
+): RoomState {
+  const roomState = rooms.setReady(
+    roomId,
+    playerId,
+    reconnectToken,
+    ready,
+  )
+  realtime.emitToRoom(roomState.roomId, 'room:state', roomState)
+  return roomState
+}
+
+function reconnectRoom(
+  roomId: string,
+  playerId: string,
+  reconnectToken: string,
+  connectionId: string,
+): RoomSession {
+  const session = rooms.reconnect(
+    roomId,
+    playerId,
+    reconnectToken,
+    connectionId,
+  )
+  realtime.join(connectionId, session.roomState.roomId)
+  const timerKey = playerTimerKey(
+    session.roomState.roomId,
+    session.playerId,
+  )
+  const disconnectTimer = disconnectTimers.get(timerKey)
+  if (disconnectTimer !== undefined) clearTimeout(disconnectTimer)
+  disconnectTimers.delete(timerKey)
+  const forfeitTimer = forfeitTimers.get(timerKey)
+  if (forfeitTimer !== undefined) clearTimeout(forfeitTimer)
+  forfeitTimers.delete(timerKey)
+
+  realtime.emitToRoom(session.roomState.roomId, 'player:reconnected', {
+    playerId: session.playerId,
+  })
+  realtime.emitToRoom(
+    session.roomState.roomId,
+    'room:state',
+    session.roomState,
+  )
+  const resuming = rooms.resumeAfterReconnect(session.roomState.roomId)
+  if (resuming !== null) {
+    realtime.emitToRoom(
+      session.roomState.roomId,
+      'match:resuming',
+      resuming,
+    )
+  }
+  for (const delivery of rooms.getPendingAttacksForPlayer(
+    session.roomState.roomId,
+    session.playerId,
+  )) {
+    realtime.emitToConnection(
+      delivery.targetSocketId,
+      'attack:incoming',
+      delivery.event,
+    )
+  }
+  return session
+}
+
+function startMatch(payload: MatchStartPayload): RoundPreparation {
+  const result = rooms.startMatch(
+    payload.roomId,
+    payload.playerId,
+    payload.reconnectToken,
+  )
+  realtime.emitToRoom(
+    result.roomState.roomId,
+    'room:state',
+    result.roomState,
+  )
+  realtime.emitToRoom(
+    result.roomState.roomId,
+    'match:starting',
+    result.preparation,
+  )
+  return result.preparation
+}
+
+function markRoundReady(
+  payload: RoundReadyPayload,
+): RoundStarting | null {
+  const result = rooms.markRoundReady(
+    payload.roomId,
+    payload.playerId,
+    payload.reconnectToken,
+    payload.matchId,
+    payload.roundId,
+  )
+  if (result.starting !== null) {
+    realtime.emitToRoom(
+      result.roomState.roomId,
+      'room:state',
+      result.roomState,
+    )
+    realtime.emitToRoom(
+      result.roomState.roomId,
+      'round:starting',
+      result.starting,
+    )
+  }
+  return result.starting
+}
+
+function relayBoardSnapshot(
+  connectionId: string,
+  payload: BoardSnapshot,
+): void {
+  const authorization = rooms.authorizeGameplayEvent(
+    connectionId,
+    payload.playerId,
+    payload.matchId,
+    payload.roundId,
+  )
+  realtime.emitToRoomExcept(
+    authorization.roomId,
+    connectionId,
+    'opponent:snapshot',
+    payload,
+  )
+}
+
+function recordSimulationChecksum(
+  connectionId: string,
+  payload: SimulationChecksumReport,
+): { accepted: boolean; conflict: boolean } {
+  const result = rooms.recordSimulationChecksum(connectionId, payload)
+  if (result.conflict !== null) {
+    const diagnostic: SimulationDesync = {
+      protocolVersion: 1,
+      matchId: payload.matchId,
+      roundId: payload.roundId,
+      playerId: payload.playerId,
+      simulationStep: payload.simulationStep,
+      detectedAt: Date.now(),
+    }
+    realtime.emitToConnection(
+      connectionId,
+      'simulation:desync',
+      diagnostic,
+    )
+    console.warn(
+      JSON.stringify({
+        event: 'simulation_checksum_conflict',
+        ...diagnostic,
+        previousChecksum: result.conflict.previousChecksum,
+        reportedChecksum: result.conflict.reportedChecksum,
+      }),
+    )
+  }
+  return {
+    accepted: result.accepted,
+    conflict: result.conflict !== null,
+  }
+}
+
+function createAttack(
+  connectionId: string,
+  payload: AttackEvent,
+): OrderedAttackEvent {
+  const ordered = rooms.orderAttack(connectionId, payload)
+  realtime.emitToConnection(
+    ordered.targetSocketId,
+    'attack:incoming',
+    ordered.event,
+  )
+  realtime.emitToConnection(
+    connectionId,
+    'attack:confirmed',
+    ordered.event,
+  )
+  return ordered.event
+}
+
+function acknowledgeAttack(
+  connectionId: string,
+  payload: AttackAck,
+): boolean {
+  return rooms.acknowledgeAttack(
+    connectionId,
+    payload.playerId,
+    payload.matchId,
+    payload.roundId,
+    payload.serverSequence,
+  )
+}
+
+function reportTopOut(
+  connectionId: string,
+  payload: RoundTopOut,
+): { accepted: true } {
+  const result = rooms.reportTopOut(
+    connectionId,
+    payload.playerId,
+    payload.matchId,
+    payload.roundId,
+  )
+  const timerKey = roundTimerKey(payload.matchId, payload.roundId)
+  if (result.resolution !== null) {
+    const timer = topOutTimers.get(timerKey)
+    if (timer !== undefined) clearTimeout(timer)
+    topOutTimers.delete(timerKey)
+    emitRoundResolution(result.resolution)
+  } else if (result.resolveAt !== null) {
+    const existingTimer = topOutTimers.get(timerKey)
+    if (existingTimer !== undefined) clearTimeout(existingTimer)
+    const delay = Math.max(0, result.resolveAt - Date.now()) + 5
+    topOutTimers.set(
+      timerKey,
+      setTimeout(() => {
+        topOutTimers.delete(timerKey)
+        const resolution = rooms.resolvePendingTopOut(
+          payload.matchId,
+          payload.roundId,
+        )
+        if (resolution !== null) emitRoundResolution(resolution)
+      }, delay),
+    )
+  }
+  return { accepted: true }
+}
+
+function readyForNextRound(
+  payload: NextRoundReadyPayload,
+): RoundPreparation | null {
+  const result = rooms.readyForNextRound(
+    payload.roomId,
+    payload.playerId,
+    payload.reconnectToken,
+    payload.matchId,
+    payload.roundId,
+  )
+  if (result.preparation !== null) {
+    realtime.emitToRoom(
+      result.roomState.roomId,
+      'room:state',
+      result.roomState,
+    )
+    realtime.emitToRoom(
+      result.roomState.roomId,
+      'round:prepare',
+      result.preparation,
+    )
+  }
+  return result.preparation
+}
+
+function requestRematch(
+  payload: MatchRematchPayload,
+): RoundPreparation | null {
+  const result = rooms.requestRematch(
+    payload.roomId,
+    payload.playerId,
+    payload.reconnectToken,
+    payload.matchId,
+  )
+  if (result.preparation !== null) {
+    realtime.emitToRoom(
+      result.roomState.roomId,
+      'room:state',
+      result.roomState,
+    )
+    realtime.emitToRoom(
+      result.roomState.roomId,
+      'match:starting',
+      result.preparation,
+    )
+  }
+  return result.preparation
+}
+
 function emitRoundResolution(resolution: RoundResolution): void {
-  io.to(resolution.roundEnded.roomId).emit(
+  realtime.emitToRoom(
+    resolution.roundEnded.roomId,
     'round:ended',
     resolution.roundEnded,
   )
   if (resolution.matchEnded !== null) {
-    io.to(resolution.matchEnded.roomId).emit(
+    realtime.emitToRoom(
+      resolution.matchEnded.roomId,
       'match:ended',
       resolution.matchEnded,
     )
   }
-  io.to(resolution.roundEnded.roomId).emit(
+  realtime.emitToRoom(
+    resolution.roundEnded.roomId,
     'room:state',
     rooms.getById(resolution.roundEnded.roomId),
   )
@@ -335,7 +685,8 @@ const attackRetryInterval = setInterval(() => {
   for (const delivery of rooms.getRetryableAttacks(
     ATTACK_RETRY_AFTER_MS,
   )) {
-    io.to(delivery.targetSocketId).emit(
+    realtime.emitToConnection(
+      delivery.targetSocketId,
       'attack:incoming',
       delivery.event,
     )
@@ -354,20 +705,460 @@ const roomCleanupInterval = setInterval(() => {
   leaderboardReadLimiter.prune()
   leaderboardWriteLimiter.prune()
   for (const roomState of cleanup.updatedRooms) {
-    io.to(roomState.roomId).emit('room:state', roomState)
+    realtime.emitToRoom(roomState.roomId, 'room:state', roomState)
   }
   for (const room of cleanup.expiredRooms) {
     cancelExpiredRoomTimers(room)
-    io.to(room.roomId).emit('room:error', {
+    realtime.emitToRoom(room.roomId, 'room:error', {
       code: 'ROOM_NOT_FOUND',
       message: 'This room expired after being inactive.',
       roomId: room.roomId,
     } satisfies RoomError)
-    io.in(room.roomId).socketsLeave(room.roomId)
+    realtime.leaveRoom(room.roomId)
   }
 }, ROOM_CLEANUP_SCAN_MS)
 
+function handleDisconnect(connectionId: string): void {
+  controlEventLimiter.delete(connectionId)
+  snapshotLimiter.delete(connectionId)
+  pingLimiter.delete(connectionId)
+  malformedEventLimiter.delete(connectionId)
+  for (const disconnected of rooms.markDisconnected(connectionId)) {
+    const { roomState, playerId, activeRound } = disconnected
+    realtime.emitToRoom(roomState.roomId, 'room:state', roomState)
+    realtime.emitToRoom(roomState.roomId, 'player:disconnected', {
+      playerId,
+    })
+    if (activeRound === null) continue
+
+    const timerKey = playerTimerKey(roomState.roomId, playerId)
+    disconnectTimers.set(
+      timerKey,
+      setTimeout(() => {
+        disconnectTimers.delete(timerKey)
+        const paused = rooms.pauseForDisconnect(
+          roomState.roomId,
+          playerId,
+        )
+        if (paused === null) return
+
+        realtime.emitToRoom(roomState.roomId, 'match:paused', paused)
+        const forfeitDelay = Math.max(0, paused.forfeitAt - Date.now())
+        forfeitTimers.set(
+          timerKey,
+          setTimeout(() => {
+            forfeitTimers.delete(timerKey)
+            const resolution = rooms.forfeitDisconnected(
+              roomState.roomId,
+              playerId,
+            )
+            if (resolution !== null) emitRoundResolution(resolution)
+          }, forfeitDelay),
+        )
+      }, 1_000),
+    )
+  }
+}
+
+function nativeFailure(
+  context: NativeRequestContext,
+  error: RoomError,
+  emitError: boolean,
+): void {
+  if (emitError) {
+    realtime.emitToConnection(context.connectionId, 'room:error', error)
+  }
+  context.respond({ ok: false, error })
+}
+
+function rejectNativeIfLimited(
+  context: NativeRequestContext,
+  limiter: FixedWindowRateLimiter,
+  key: string,
+  emitError = true,
+): boolean {
+  const result = limiter.consume(key)
+  if (result.allowed) return false
+  nativeFailure(context, rateLimitError(result.retryAfterMs), emitError)
+  return true
+}
+
+function rejectMalformedNative(
+  context: NativeRequestContext,
+  message: string,
+  emitError = true,
+): void {
+  const result = malformedEventLimiter.consume(context.connectionId)
+  nativeFailure(
+    context,
+    result.allowed
+      ? { code: 'INVALID_REQUEST', message }
+      : rateLimitError(result.retryAfterMs),
+    emitError,
+  )
+}
+
+function shouldEmitNativeRoomError(event: string): boolean {
+  return USER_FACING_NATIVE_ERROR_EVENTS.has(event)
+}
+
+function handleNativeRequest(context: NativeRequestContext): void {
+  const { connectionId, clientAddress, request } = context
+
+  try {
+    switch (request.event) {
+      case 'room:create': {
+        if (
+          rejectNativeIfLimited(
+            context,
+            roomCreationLimiter,
+            clientAddress,
+          )
+        ) return
+        const parsed = roomCreatePayloadSchema.safeParse(request.payload)
+        if (!parsed.success) {
+          rejectMalformedNative(
+            context,
+            'Enter a player name between 1 and 20 characters.',
+          )
+          return
+        }
+        context.respond({
+          ok: true,
+          data: createRoom(parsed.data.displayName, connectionId),
+        })
+        return
+      }
+      case 'room:join': {
+        if (
+          rejectNativeIfLimited(context, roomJoinLimiter, clientAddress)
+        ) return
+        const parsed = roomJoinPayloadSchema.safeParse(request.payload)
+        if (!parsed.success) {
+          rejectMalformedNative(
+            context,
+            'Check the room code and player name.',
+          )
+          return
+        }
+        context.respond({
+          ok: true,
+          data: joinRoom(
+            parsed.data.roomCode,
+            parsed.data.displayName,
+            connectionId,
+          ),
+        })
+        return
+      }
+      case 'room:reconnect': {
+        if (
+          rejectNativeIfLimited(
+            context,
+            authenticationLimiter,
+            clientAddress,
+          )
+        ) return
+        const parsed = roomReconnectPayloadSchema.safeParse(request.payload)
+        if (!parsed.success) {
+          rejectMalformedNative(
+            context,
+            'The saved room session was invalid.',
+            false,
+          )
+          return
+        }
+        context.respond({
+          ok: true,
+          data: reconnectRoom(
+            parsed.data.roomId,
+            parsed.data.playerId,
+            parsed.data.reconnectToken,
+            connectionId,
+          ),
+        })
+        return
+      }
+      case 'player:ready': {
+        if (
+          rejectNativeIfLimited(
+            context,
+            controlEventLimiter,
+            connectionId,
+          )
+        ) return
+        const parsed = playerReadyPayloadSchema.safeParse(request.payload)
+        if (!parsed.success) {
+          rejectMalformedNative(
+            context,
+            'The ready-state update was invalid.',
+          )
+          return
+        }
+        context.respond({
+          ok: true,
+          data: updateReadyState(
+            parsed.data.roomId,
+            parsed.data.playerId,
+            parsed.data.reconnectToken,
+            parsed.data.ready,
+          ),
+        })
+        return
+      }
+      case 'match:start': {
+        if (
+          rejectNativeIfLimited(
+            context,
+            controlEventLimiter,
+            connectionId,
+          )
+        ) return
+        const parsed = matchStartPayloadSchema.safeParse(request.payload)
+        if (!parsed.success) {
+          rejectMalformedNative(
+            context,
+            'The match-start request was invalid.',
+          )
+          return
+        }
+        context.respond({ ok: true, data: startMatch(parsed.data) })
+        return
+      }
+      case 'round:ready': {
+        if (
+          rejectNativeIfLimited(
+            context,
+            controlEventLimiter,
+            connectionId,
+          )
+        ) return
+        const parsed = roundReadyPayloadSchema.safeParse(request.payload)
+        if (!parsed.success) {
+          rejectMalformedNative(
+            context,
+            'The round-ready acknowledgement was invalid.',
+          )
+          return
+        }
+        context.respond({ ok: true, data: markRoundReady(parsed.data) })
+        return
+      }
+      case 'board:snapshot': {
+        if (
+          rejectNativeIfLimited(
+            context,
+            snapshotLimiter,
+            connectionId,
+            false,
+          )
+        ) return
+        const parsed = boardSnapshotSchema.safeParse(request.payload)
+        if (!parsed.success) {
+          rejectMalformedNative(
+            context,
+            'The board snapshot was invalid.',
+            false,
+          )
+          return
+        }
+        try {
+          relayBoardSnapshot(connectionId, parsed.data)
+        } catch {
+          // Snapshots are lossy visual updates. Invalid or stale data is ignored.
+        }
+        context.respond({ ok: true, data: { accepted: true } })
+        return
+      }
+      case 'simulation:checksum': {
+        if (
+          rejectNativeIfLimited(
+            context,
+            controlEventLimiter,
+            connectionId,
+          )
+        ) return
+        const parsed = simulationChecksumReportSchema.safeParse(
+          request.payload,
+        )
+        if (!parsed.success) {
+          rejectMalformedNative(
+            context,
+            'The simulation checksum report was invalid.',
+            false,
+          )
+          return
+        }
+        context.respond({
+          ok: true,
+          data: recordSimulationChecksum(connectionId, parsed.data),
+        })
+        return
+      }
+      case 'attack:create': {
+        if (
+          rejectNativeIfLimited(
+            context,
+            controlEventLimiter,
+            connectionId,
+          )
+        ) return
+        const parsed = attackEventSchema.safeParse(request.payload)
+        if (!parsed.success) {
+          rejectMalformedNative(
+            context,
+            'The attack payload was invalid.',
+          )
+          return
+        }
+        context.respond({
+          ok: true,
+          data: createAttack(connectionId, parsed.data),
+        })
+        return
+      }
+      case 'attack:ack': {
+        if (
+          rejectNativeIfLimited(
+            context,
+            controlEventLimiter,
+            connectionId,
+          )
+        ) return
+        const parsed = attackAckSchema.safeParse(request.payload)
+        if (!parsed.success) {
+          rejectMalformedNative(
+            context,
+            'The attack acknowledgement was invalid.',
+            false,
+          )
+          return
+        }
+        context.respond({
+          ok: true,
+          data: {
+            acknowledged: acknowledgeAttack(connectionId, parsed.data),
+          },
+        })
+        return
+      }
+      case 'round:topout': {
+        if (
+          rejectNativeIfLimited(
+            context,
+            controlEventLimiter,
+            connectionId,
+          )
+        ) return
+        const parsed = roundTopOutSchema.safeParse(request.payload)
+        if (!parsed.success) {
+          rejectMalformedNative(
+            context,
+            'The top-out report was invalid.',
+            false,
+          )
+          return
+        }
+        context.respond({
+          ok: true,
+          data: reportTopOut(connectionId, parsed.data),
+        })
+        return
+      }
+      case 'round:next': {
+        if (
+          rejectNativeIfLimited(
+            context,
+            controlEventLimiter,
+            connectionId,
+          )
+        ) return
+        const parsed = nextRoundReadyPayloadSchema.safeParse(request.payload)
+        if (!parsed.success) {
+          rejectMalformedNative(
+            context,
+            'The next-round request was invalid.',
+            false,
+          )
+          return
+        }
+        context.respond({
+          ok: true,
+          data: readyForNextRound(parsed.data),
+        })
+        return
+      }
+      case 'match:rematch': {
+        if (
+          rejectNativeIfLimited(
+            context,
+            controlEventLimiter,
+            connectionId,
+          )
+        ) return
+        const parsed = matchRematchPayloadSchema.safeParse(request.payload)
+        if (!parsed.success) {
+          rejectMalformedNative(
+            context,
+            'The rematch request was invalid.',
+            false,
+          )
+          return
+        }
+        context.respond({
+          ok: true,
+          data: requestRematch(parsed.data),
+        })
+        return
+      }
+      case 'ping': {
+        if (
+          rejectNativeIfLimited(
+            context,
+            pingLimiter,
+            connectionId,
+            false,
+          )
+        ) return
+        const parsed = pingPayloadSchema.safeParse(request.payload)
+        if (!parsed.success) {
+          rejectMalformedNative(
+            context,
+            'The ping timestamp was invalid.',
+            false,
+          )
+          return
+        }
+        const pong: Pong = {
+          clientTimestamp: parsed.data,
+          serverTimestamp: Date.now(),
+        }
+        realtime.emitToConnection(connectionId, 'pong', pong)
+        context.respond({ ok: true, data: pong })
+        return
+      }
+    }
+  } catch (error) {
+    nativeFailure(
+      context,
+      toRoomError(error),
+      shouldEmitNativeRoomError(request.event),
+    )
+  }
+}
+
+const nativeWebSocket = createNativeWebSocketTransport({
+  httpServer,
+  hub: realtime,
+  getClientAddress: getNativeClientAddress,
+  onRequest: handleNativeRequest,
+  onDisconnect: handleDisconnect,
+})
+
 io.on('connection', (socket) => {
+  realtime.register(socket.id, (event, payload) => {
+    socket.emit(event, payload)
+  })
   const clientAddress = getClientAddress(socket)
 
   function rejectIfLimited(
@@ -429,13 +1220,7 @@ io.on('connection', (socket) => {
       }
 
       try {
-        const session = rooms.create(parsed.data.displayName, socket.id)
-        void socket.join(session.roomState.roomId)
-        socket.emit('room:created', session)
-        io.to(session.roomState.roomId).emit(
-          'room:state',
-          session.roomState,
-        )
+        const session = createRoom(parsed.data.displayName, socket.id)
         acknowledge?.({ ok: true, data: session })
       } catch (error) {
         const roomError = toRoomError(error)
@@ -466,16 +1251,10 @@ io.on('connection', (socket) => {
       }
 
       try {
-        const session = rooms.join(
+        const session = joinRoom(
           parsed.data.roomCode,
           parsed.data.displayName,
           socket.id,
-        )
-        void socket.join(session.roomState.roomId)
-        socket.emit('room:joined', session)
-        io.to(session.roomState.roomId).emit(
-          'room:state',
-          session.roomState,
         )
         acknowledge?.({ ok: true, data: session })
       } catch (error) {
@@ -507,13 +1286,12 @@ io.on('connection', (socket) => {
       }
 
       try {
-        const roomState = rooms.setReady(
+        const roomState = updateReadyState(
           parsed.data.roomId,
           parsed.data.playerId,
           parsed.data.reconnectToken,
           parsed.data.ready,
         )
-        io.to(roomState.roomId).emit('room:state', roomState)
         acknowledge?.({ ok: true, data: roomState })
       } catch (error) {
         const roomError = toRoomError(error)
@@ -549,47 +1327,12 @@ io.on('connection', (socket) => {
       }
 
       try {
-        const session = rooms.reconnect(
+        const session = reconnectRoom(
           parsed.data.roomId,
           parsed.data.playerId,
           parsed.data.reconnectToken,
           socket.id,
         )
-        void socket.join(session.roomState.roomId)
-        const timerKey = playerTimerKey(
-          session.roomState.roomId,
-          session.playerId,
-        )
-        const disconnectTimer = disconnectTimers.get(timerKey)
-        if (disconnectTimer !== undefined) clearTimeout(disconnectTimer)
-        disconnectTimers.delete(timerKey)
-        const forfeitTimer = forfeitTimers.get(timerKey)
-        if (forfeitTimer !== undefined) clearTimeout(forfeitTimer)
-        forfeitTimers.delete(timerKey)
-
-        io.to(session.roomState.roomId).emit('player:reconnected', {
-          playerId: session.playerId,
-        })
-        io.to(session.roomState.roomId).emit(
-          'room:state',
-          session.roomState,
-        )
-        const resuming = rooms.resumeAfterReconnect(session.roomState.roomId)
-        if (resuming !== null) {
-          io.to(session.roomState.roomId).emit(
-            'match:resuming',
-            resuming,
-          )
-        }
-        for (const delivery of rooms.getPendingAttacksForPlayer(
-          session.roomState.roomId,
-          session.playerId,
-        )) {
-          io.to(delivery.targetSocketId).emit(
-            'attack:incoming',
-            delivery.event,
-          )
-        }
         acknowledge?.({ ok: true, data: session })
       } catch (error) {
         const roomError = toRoomError(error)
@@ -619,20 +1362,7 @@ io.on('connection', (socket) => {
       }
 
       try {
-        const result = rooms.startMatch(
-          parsed.data.roomId,
-          parsed.data.playerId,
-          parsed.data.reconnectToken,
-        )
-        io.to(result.roomState.roomId).emit(
-          'room:state',
-          result.roomState,
-        )
-        io.to(result.roomState.roomId).emit(
-          'match:starting',
-          result.preparation,
-        )
-        acknowledge?.({ ok: true, data: result.preparation })
+        acknowledge?.({ ok: true, data: startMatch(parsed.data) })
       } catch (error) {
         const roomError = toRoomError(error)
         socket.emit('room:error', roomError)
@@ -664,24 +1394,7 @@ io.on('connection', (socket) => {
       }
 
       try {
-        const result = rooms.markRoundReady(
-          parsed.data.roomId,
-          parsed.data.playerId,
-          parsed.data.reconnectToken,
-          parsed.data.matchId,
-          parsed.data.roundId,
-        )
-        if (result.starting !== null) {
-          io.to(result.roomState.roomId).emit(
-            'room:state',
-            result.roomState,
-          )
-          io.to(result.roomState.roomId).emit(
-            'round:starting',
-            result.starting,
-          )
-        }
-        acknowledge?.({ ok: true, data: result.starting })
+        acknowledge?.({ ok: true, data: markRoundReady(parsed.data) })
       } catch (error) {
         const roomError = toRoomError(error)
         socket.emit('room:error', roomError)
@@ -712,15 +1425,7 @@ io.on('connection', (socket) => {
     }
 
     try {
-      const authorization = rooms.authorizeGameplayEvent(
-        socket.id,
-        parsed.data.playerId,
-        parsed.data.matchId,
-        parsed.data.roundId,
-      )
-      socket
-        .to(authorization.roomId)
-        .emit('opponent:snapshot', parsed.data)
+      relayBoardSnapshot(socket.id, parsed.data)
     } catch {
       // Snapshots are lossy visual updates. Invalid or stale data is ignored.
     }
@@ -753,35 +1458,9 @@ io.on('connection', (socket) => {
       }
 
       try {
-        const result = rooms.recordSimulationChecksum(
-          socket.id,
-          parsed.data,
-        )
-        if (result.conflict !== null) {
-          const diagnostic: SimulationDesync = {
-            protocolVersion: 1,
-            matchId: parsed.data.matchId,
-            roundId: parsed.data.roundId,
-            playerId: parsed.data.playerId,
-            simulationStep: parsed.data.simulationStep,
-            detectedAt: Date.now(),
-          }
-          socket.emit('simulation:desync', diagnostic)
-          console.warn(
-            JSON.stringify({
-              event: 'simulation_checksum_conflict',
-              ...diagnostic,
-              previousChecksum: result.conflict.previousChecksum,
-              reportedChecksum: result.conflict.reportedChecksum,
-            }),
-          )
-        }
         acknowledge?.({
           ok: true,
-          data: {
-            accepted: result.accepted,
-            conflict: result.conflict !== null,
-          },
+          data: recordSimulationChecksum(socket.id, parsed.data),
         })
       } catch (error) {
         const roomError = toRoomError(error)
@@ -808,13 +1487,10 @@ io.on('connection', (socket) => {
       }
 
       try {
-        const ordered = rooms.orderAttack(socket.id, parsed.data)
-        io.to(ordered.targetSocketId).emit(
-          'attack:incoming',
-          ordered.event,
-        )
-        socket.emit('attack:confirmed', ordered.event)
-        acknowledge?.({ ok: true, data: ordered.event })
+        acknowledge?.({
+          ok: true,
+          data: createAttack(socket.id, parsed.data),
+        })
       } catch (error) {
         const roomError = toRoomError(error)
         socket.emit('room:error', roomError)
@@ -847,14 +1523,12 @@ io.on('connection', (socket) => {
       }
 
       try {
-        const acknowledged = rooms.acknowledgeAttack(
-          socket.id,
-          parsed.data.playerId,
-          parsed.data.matchId,
-          parsed.data.roundId,
-          parsed.data.serverSequence,
-        )
-        acknowledge?.({ ok: true, data: { acknowledged } })
+        acknowledge?.({
+          ok: true,
+          data: {
+            acknowledged: acknowledgeAttack(socket.id, parsed.data),
+          },
+        })
       } catch (error) {
         const roomError = toRoomError(error)
         acknowledge?.({ ok: false, error: roomError })
@@ -886,38 +1560,10 @@ io.on('connection', (socket) => {
       }
 
       try {
-        const result = rooms.reportTopOut(
-          socket.id,
-          parsed.data.playerId,
-          parsed.data.matchId,
-          parsed.data.roundId,
-        )
-        const timerKey = roundTimerKey(
-          parsed.data.matchId,
-          parsed.data.roundId,
-        )
-        if (result.resolution !== null) {
-          const timer = topOutTimers.get(timerKey)
-          if (timer !== undefined) clearTimeout(timer)
-          topOutTimers.delete(timerKey)
-          emitRoundResolution(result.resolution)
-        } else if (result.resolveAt !== null) {
-          const existingTimer = topOutTimers.get(timerKey)
-          if (existingTimer !== undefined) clearTimeout(existingTimer)
-          const delay = Math.max(0, result.resolveAt - Date.now()) + 5
-          topOutTimers.set(
-            timerKey,
-            setTimeout(() => {
-              topOutTimers.delete(timerKey)
-              const resolution = rooms.resolvePendingTopOut(
-                parsed.data.matchId,
-                parsed.data.roundId,
-              )
-              if (resolution !== null) emitRoundResolution(resolution)
-            }, delay),
-          )
-        }
-        acknowledge?.({ ok: true, data: { accepted: true } })
+        acknowledge?.({
+          ok: true,
+          data: reportTopOut(socket.id, parsed.data),
+        })
       } catch (error) {
         const roomError = toRoomError(error)
         acknowledge?.({ ok: false, error: roomError })
@@ -949,24 +1595,10 @@ io.on('connection', (socket) => {
       }
 
       try {
-        const result = rooms.readyForNextRound(
-          parsed.data.roomId,
-          parsed.data.playerId,
-          parsed.data.reconnectToken,
-          parsed.data.matchId,
-          parsed.data.roundId,
-        )
-        if (result.preparation !== null) {
-          io.to(result.roomState.roomId).emit(
-            'room:state',
-            result.roomState,
-          )
-          io.to(result.roomState.roomId).emit(
-            'round:prepare',
-            result.preparation,
-          )
-        }
-        acknowledge?.({ ok: true, data: result.preparation })
+        acknowledge?.({
+          ok: true,
+          data: readyForNextRound(parsed.data),
+        })
       } catch (error) {
         const roomError = toRoomError(error)
         acknowledge?.({ ok: false, error: roomError })
@@ -998,23 +1630,10 @@ io.on('connection', (socket) => {
       }
 
       try {
-        const result = rooms.requestRematch(
-          parsed.data.roomId,
-          parsed.data.playerId,
-          parsed.data.reconnectToken,
-          parsed.data.matchId,
-        )
-        if (result.preparation !== null) {
-          io.to(result.roomState.roomId).emit(
-            'room:state',
-            result.roomState,
-          )
-          io.to(result.roomState.roomId).emit(
-            'match:starting',
-            result.preparation,
-          )
-        }
-        acknowledge?.({ ok: true, data: result.preparation })
+        acknowledge?.({
+          ok: true,
+          data: requestRematch(parsed.data),
+        })
       } catch (error) {
         const roomError = toRoomError(error)
         acknowledge?.({ ok: false, error: roomError })
@@ -1053,45 +1672,8 @@ io.on('connection', (socket) => {
   )
 
   socket.on('disconnect', () => {
-    controlEventLimiter.delete(socket.id)
-    snapshotLimiter.delete(socket.id)
-    pingLimiter.delete(socket.id)
-    malformedEventLimiter.delete(socket.id)
-    for (const disconnected of rooms.markDisconnected(socket.id)) {
-      const { roomState, playerId, activeRound } = disconnected
-      io.to(roomState.roomId).emit('room:state', roomState)
-      io.to(roomState.roomId).emit('player:disconnected', {
-        playerId,
-      })
-      if (activeRound === null) continue
-
-      const timerKey = playerTimerKey(roomState.roomId, playerId)
-      disconnectTimers.set(
-        timerKey,
-        setTimeout(() => {
-          disconnectTimers.delete(timerKey)
-          const paused = rooms.pauseForDisconnect(
-            roomState.roomId,
-            playerId,
-          )
-          if (paused === null) return
-
-          io.to(roomState.roomId).emit('match:paused', paused)
-          const forfeitDelay = Math.max(0, paused.forfeitAt - Date.now())
-          forfeitTimers.set(
-            timerKey,
-            setTimeout(() => {
-              forfeitTimers.delete(timerKey)
-              const resolution = rooms.forfeitDisconnected(
-                roomState.roomId,
-                playerId,
-              )
-              if (resolution !== null) emitRoundResolution(resolution)
-            }, forfeitDelay),
-          )
-        }, 1_000),
-      )
-    }
+    handleDisconnect(socket.id)
+    realtime.unregister(socket.id)
   })
 })
 
@@ -1118,10 +1700,12 @@ function shutDown(signal: NodeJS.Signals): void {
   }, 10_000)
   forcedExit.unref()
 
-  io.close(() => {
-    leaderboard?.close()
-    clearTimeout(forcedExit)
-    process.exit(0)
+  nativeWebSocket.close(() => {
+    io.close(() => {
+      leaderboard?.close()
+      clearTimeout(forcedExit)
+      process.exit(0)
+    })
   })
 }
 

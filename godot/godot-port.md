@@ -293,28 +293,33 @@ framing is a liability. Do not do it.
 message names and the same Zod-validated payloads, and have Socket.IO and the
 new endpoint feed the same room/match logic.
 
-`apps/server/src/index.ts` already routes everything through a thin
-`socket.on(name, payload)` → domain-call → `io.to(...).emit(name, payload)`
-shape, so extract that into a transport-agnostic layer:
+The first transport slice now routes all outbound room delivery through a
+transport-neutral hub while leaving the established Socket.IO ingress intact:
 
 ```
 apps/server/src/
-  transport/socketio.ts     existing behaviour, unchanged for the web client
-  transport/websocket.ts    new: `ws` server on /ws, JSON frames
-  transport/session.ts      shared: socket id ↔ player, rooms, broadcast helpers
-  handlers/*.ts             the existing room/match/attack logic, moved as-is
+  realtime/realtime-hub.ts      connection ↔ room membership and broadcasts
+  realtime/native-websocket.ts plain `ws` server on `/native`
+  index.ts                     shared room commands plus existing match handlers
 ```
 
-Frame format (one JSON object per message, both directions):
+Native frame format (one JSON object per message, both directions):
 
 ```json
-{ "e": "attack:send", "d": { ...exact existing payload... } }
+{
+  "protocolVersion": 1,
+  "type": "request",
+  "requestId": "42-1",
+  "event": "room:create",
+  "payload": { "displayName": "Mira" }
+}
 ```
 
 Room membership/broadcast is a `Map<roomId, Set<Connection>>` in
-`transport/session.ts`. Everything else — rate limits, `KNOWN_CLIENT_EVENTS`,
-Zod validation, attack sequencing and retry, the 150 ms simultaneous-top-out
-window, checksum tracking, room cleanup timers — is reused untouched.
+`realtime-hub.ts`. Every existing client command now accepts this envelope and
+reuses the same Zod validation, RoomStore command functions, rate limiters,
+reconnect timers, top-out resolution, attack sequencing, and broadcasts as
+Socket.IO.
 
 This is a genuinely small change (a day or two) and it means the Godot client
 can be a ~400-line `RoomClient` instead of a protocol reimplementation.
@@ -461,18 +466,30 @@ Each phase ends with something runnable.
 - 2-minute timed run, final-stretch clock, result screen.
 - Local best score and interruption recovery; no remote ranking.
 
-**Phase 4 — transport split on the server, ~2 days**
-- Extract `transport/`, add the WebSocket endpoint, protocol version 2.
-- Existing web client must be unaffected — its Socket.IO tests stay green.
+**Phase 4 — transport split on the server, complete**
+- Added the `/native` WebSocket endpoint and versioned protocol-v1 envelopes.
+- Added cross-transport room membership and outbound delivery without changing
+  the web client's Socket.IO contract.
+- Room, match, round, snapshot, attack, checksum, result, rematch, and clock
+  events all use shared command functions.
 
 **Phase 5 — online duel, ~2.5 weeks**
-- `RoomClient`: create/join/reconnect, ready state, round handshake,
-  countdown on synced clock.
-- Opponent board view fed by the ~10 Hz snapshot relay.
-- Attack send/retry/ack, incoming telegraph queue, checksum reporting.
-- Pause/resume on disconnect, 30 s recovery window, round/match resolution,
-  rematch.
-- Application-pause recalibration and crash recovery snapshot to `user://`.
+- `RoomClient` transport complete: create/join/reconnect, ready state, round
+  handshake, synced clock, snapshots, attacks, checksums, disconnect state,
+  results, next round, and rematch.
+- Private-room create/join/reconnect lobby, ready/host-start controls, synced
+  countdown, server-seeded local board, attack application, snapshot/checksum
+  reporting, results, next round, and rematch are wired.
+- Compact opponent presentation is implemented: a non-interactive board beside
+  the local board reuses the native renderer and consumes the filtered ~10 Hz
+  snapshot relay.
+- Disconnect/resume presentation and application-foreground clock
+  recalibration are implemented with a blocking status card and synchronized
+  resume gate; checksum diagnostics remain visible in the HUD.
+- Online simulation and round metadata persist to `user://`; recovery is scoped
+  to the same player, match, round, and server seed and expires with the
+  35-second reconnect window.
+- Remaining: real-device two-player soak testing.
 
 **Phase 6 — store readiness, ~1 week**
 - Icons, splash, export presets, signing, privacy manifest (iOS), target SDK

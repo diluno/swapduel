@@ -46,9 +46,28 @@ Canonical traces and TypeScript checksum fixtures live in
 `../tools/conformance/`. Godot matches every checkpoint in the full time-limit,
 swap, and incoming-garbage traces.
 
-The presentation is an initial functional pass; authored sprites,
-platform-aware accessibility defaults, and online duel networking are not
-implemented yet.
+The presentation is an initial functional pass; authored sprites and
+platform-aware accessibility defaults are not implemented yet. The native room
+transport foundation is available through the
+`RoomClient` autoload: it connects to the server's versioned `/native`
+WebSocket endpoint, queues requests while connecting, persists reconnect
+credentials, tracks room and round state, samples the server clock, filters
+opponent snapshots, retries outgoing attacks, acknowledges incoming attacks,
+and exposes match pause, resume, result, next-round, and rematch events.
+
+The home screen now includes a private-duel flow for creating or joining a
+six-character room, reconnecting a saved session, readying both players, and
+letting the host start. Online rounds use the server seed and synced start
+time, relay attacks and board snapshots, report checksums and top-outs, and
+support next rounds and rematches. During a round, a compact read-only rival
+board beside the local board projects the filtered ~10 Hz snapshots through the
+same native panel and garbage renderer. Disconnects and application foreground
+transitions pause interaction behind a dedicated status card; reconnects wait
+for the server's shared countdown, and foreground play waits for a fresh clock
+sample. Active online boards are saved every two seconds and on application
+pause; a restart can restore only a snapshot from the same player, match,
+round, and server seed within the 35-second reconnect window. Consistency
+diagnostics remain visible in the match HUD.
 
 ## Play offline
 
@@ -75,6 +94,11 @@ which is ignored by Git.
 Increment `application/version` in `export_presets.cfg` before uploading a new
 build to TestFlight. Generated Xcode projects, archives, and IPAs should not be
 committed.
+
+For local room-server testing, change
+`swapduel/network/websocket_url` in `project.godot` to
+`ws://<your-mac-lan-ip>:3001/native`. An iPhone cannot use the Mac's
+`localhost`; both devices must be on the same network.
 
 ## Run the engine checks
 
