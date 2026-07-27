@@ -16,6 +16,8 @@ const Conformance = preload("res://game/engine/conformance.gd")
 const Recovery = preload("res://game/engine/recovery.gd")
 const MainScreen = preload("res://game/main.gd")
 const BoardView = preload("res://game/presentation/board_view.gd")
+const Impact = preload("res://game/presentation/impact.gd")
+const UiTheme = preload("res://game/presentation/ui_theme.gd")
 const GameSettings = preload("res://game/settings/settings.gd")
 
 var _checks := 0
@@ -40,6 +42,8 @@ func _initialize() -> void:
 	_test_board_rise_projection()
 	_test_offline_shell()
 	_test_native_settings()
+	_test_native_ui_theme()
+	_test_impact_presentation()
 	_test_conformance_initial_states()
 
 	if _failures == 0:
@@ -885,12 +889,50 @@ func _test_offline_shell() -> void:
 	var shell := MainScreen.new()
 	shell.recovery_enabled = false
 	shell._build_interface()
+	shell.size = Vector2(360.0, 720.0)
+	shell._layout_interface()
+	_check(
+		shell._pause_button.get_parent() == shell._control_row
+			and shell._raise_button.get_parent() == shell._control_row
+			and shell._restart_button.get_parent() == shell._control_row
+			and shell._pause_button.get_combined_minimum_size().x <= 72.0
+			and shell._restart_button.get_combined_minimum_size().x <= 72.0,
+		"bottom dock container owns three non-overlapping compact buttons",
+	)
+	_check(
+		shell.board_view.position - shell._board_frame.position
+			== Vector2.ONE * shell.BOARD_FRAME_INSET
+			and shell._board_frame.size - shell.board_view.size
+				== Vector2.ONE * shell.BOARD_FRAME_INSET * 2.0,
+		"board stays inside the rounded frame corner radius",
+	)
+	_check(
+		shell._help_panel.size.y <= 520.0
+			and shell._help_panel.get_combined_minimum_size().y <= 520.0,
+		"how-to-play content stays inside the visible native card",
+	)
 	shell._start_round(&"time-trial")
 	_check(
 		shell.state.status == &"playing"
 			and shell.state.time_limit == Config.TIME_TRIAL_DURATION
 			and shell._format_remaining(shell.state.time_limit) == "2:00",
 		"offline shell starts an exact two-minute time trial",
+	)
+	_check(
+		shell._time_status_label.text == "LEFT  2:00"
+			and shell._cleared_status_label.text == "CLEARED  0"
+			and shell._chain_status_label.text == "CHAIN  ×1",
+		"native HUD separates time, cleared panels, and chain status",
+	)
+	shell._toggle_pause()
+	_check(
+		shell.state.status == &"paused" and shell._pause_panel.visible,
+		"native pause action opens the dedicated pause card",
+	)
+	shell._toggle_pause()
+	_check(
+		shell.state.status == &"playing" and not shell._pause_panel.visible,
+		"native pause card resumes the same run",
 	)
 	for _step in 15:
 		Simulation.step_simulation(shell.state)
@@ -926,6 +968,16 @@ func _test_offline_shell() -> void:
 	_check(
 		shell.state.status == &"paused" and shell._home_panel.visible,
 		"offline shell returns to a paused mode-selection board",
+	)
+	shell._show_help()
+	_check(
+		shell._help_panel.visible and not shell._home_panel.visible,
+		"offline shell opens its native how-to-play panel",
+	)
+	shell._hide_help()
+	_check(
+		not shell._help_panel.visible and shell._home_panel.visible,
+		"offline shell returns from instructions to mode selection",
 	)
 	shell._show_settings()
 	_check(
@@ -963,6 +1015,109 @@ func _test_native_settings() -> void:
 		"board renderer accepts the reduced-motion preference",
 	)
 	view.free()
+
+
+func _test_native_ui_theme() -> void:
+	var native_theme := UiTheme.create()
+	_check(
+		native_theme.default_font != null
+			and UiTheme.display_font(700) != null
+			and UiTheme.body_font(900) != null,
+		"native theme loads bundled Fredoka and Nunito weights",
+	)
+	_check(
+		ProjectSettings.get_setting(
+			"display/window/size/viewport_width",
+		) == 360
+			and ProjectSettings.get_setting(
+				"display/window/size/viewport_height",
+			) == 720,
+		"native UI uses the intended 360 by 720 logical design viewport",
+	)
+	_check(
+		ProjectSettings.get_setting(
+			"display/window/stretch/mode",
+		) == "canvas_items"
+			and ProjectSettings.get_setting(
+				"display/window/stretch/aspect",
+			) == "expand",
+		"native UI expands beyond its base aspect without letterboxing",
+	)
+	var ios_export := ConfigFile.new()
+	_check(
+		ios_export.load("res://export_presets.cfg") == OK
+			and ios_export.get_value(
+				"preset.0",
+				"export_path",
+			) == "builds/ios/Swapduel.ipa"
+			and ios_export.get_value(
+				"preset.0.options",
+				"application/short_version",
+			) == "0.1.0"
+			and ios_export.get_value(
+				"preset.0.options",
+				"application/version",
+			) == "1",
+		"iOS device preset keeps ignored output and valid build versions",
+	)
+
+
+func _test_impact_presentation() -> void:
+	var state := Simulation.create_simulation("impact-panels")
+	state.board = _board_with([
+		[3, 0, &"circle"],
+	])
+	var tracker := Impact.new()
+	tracker.observe(state)
+	var panel = state.board.take_panel(3, 0)
+	state.board.set_panel(0, 0, panel)
+	state.elapsed_clock += Config.CLOCK_UNITS_PER_STEP
+	tracker.observe(state)
+	_check(
+		tracker.panel_falls.has(panel.id)
+			and tracker.panel_falls[panel.id]["distance"] == 3,
+		"impact tracker reconstructs teleported panel falls",
+	)
+	var fall_start := tracker.panel_fall_visual(
+		panel.id,
+		state.elapsed_clock,
+	)
+	var fall_duration := Impact.panel_fall_duration(3)
+	var fall_middle := tracker.panel_fall_visual(
+		panel.id,
+		state.elapsed_clock + fall_duration / 2,
+	)
+	var squash_middle := tracker.panel_fall_visual(
+		panel.id,
+		state.elapsed_clock
+			+ fall_duration
+			+ Impact.SQUASH_DURATION / 2,
+	)
+	_check(
+		fall_start.x == 3.0
+			and fall_middle.x > 0.0
+			and fall_middle.x < 3.0
+			and squash_middle.y > 0.0,
+		"panel fall visual accelerates into a landing squash",
+	)
+
+	var block = _garbage_block(11, &"normal", 0, 4, 6, 1, &"falling")
+	state.garbage = [block]
+	tracker.observe(state)
+	block.state = &"idle"
+	state.elapsed_clock += Config.CLOCK_UNITS_PER_STEP
+	var landing := tracker.observe(state)
+	_check(
+		landing.get("cells") == 6
+			and landing.get("width") == 6
+			and tracker.landings.has(block.id),
+		"impact tracker detects garbage landing weight and width",
+	)
+	state.elapsed_clock += 30 * Config.CLOCK_UNITS_PER_MILLISECOND
+	_check(
+		tracker.shake_offset(state.elapsed_clock).length() > 0.0,
+		"garbage landing produces a decaying board shake",
+	)
 
 
 func _test_board_rise_projection() -> void:

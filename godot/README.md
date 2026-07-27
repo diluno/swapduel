@@ -30,6 +30,13 @@ The first engine tranche includes:
   reusable pooled audio service with a persistent preference;
 - persistent native settings for reduced motion, 30 FPS battery saver, sound,
   and gated handheld haptics for clears, chains, and garbage landings;
+- deterministic presentation feedback reconstructed outside the simulation:
+  accelerated panel falls, landing squash and board shake, ordered clear pops,
+  and combo/chain badges with reduced-motion fallbacks;
+- an adaptive native shell themed with bundled Fredoka and Nunito variable
+  fonts, a safe-area-aware chip-based HUD and controls, dedicated home,
+  how-to-play, settings, pause, and result cards, and reduced-motion-aware
+  card and button transitions;
 - the shipping scoring and attack tables;
 - an exact integer clock shared with TypeScript: 3 units per millisecond and
   50 per 60 Hz step;
@@ -39,8 +46,8 @@ Canonical traces and TypeScript checksum fixtures live in
 `../tools/conformance/`. Godot matches every checkpoint in the full time-limit,
 swap, and incoming-garbage traces.
 
-The presentation is an initial functional pass; authored sprites, richer
-effects, platform-aware accessibility defaults, and networking are not
+The presentation is an initial functional pass; authored sprites,
+platform-aware accessibility defaults, and online duel networking are not
 implemented yet.
 
 ## Play offline
@@ -51,6 +58,23 @@ Hold **Hold to raise** to push the stack.
 
 Desktop controls use arrows or WASD to move the two-cell cursor, Space or Enter
 to swap, and Shift to raise.
+
+## Test on iPhone
+
+The checked-in iOS export preset writes generated output to `builds/ios/`,
+which is ignored by Git.
+
+1. Install the matching Godot 4.7.1 export templates from
+   **Editor → Manage Export Templates**.
+2. Connect and unlock the iPhone, trust the Mac, and enable Developer Mode.
+3. Choose **Project → Export → iOS → Export Project**.
+4. Open the generated Xcode project, select the development team and connected
+   iPhone, then run it once. After initial provisioning, the runnable preset can
+   also use Godot's one-click device button.
+
+Increment `application/version` in `export_presets.cfg` before uploading a new
+build to TestFlight. Generated Xcode projects, archives, and IPAs should not be
+committed.
 
 ## Run the engine checks
 

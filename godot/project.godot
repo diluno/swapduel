@@ -15,6 +15,7 @@ config/description="Native Swapduel client"
 run/main_scene="res://game/main.tscn"
 config/features=PackedStringArray("4.7", "GL Compatibility")
 run/max_fps=60
+config/icon="res://assets/icons/swapduel.svg"
 
 [autoload]
 
@@ -23,11 +24,12 @@ GameSettings="*res://game/settings/settings.gd"
 
 [display]
 
-window/size/viewport_width=720
-window/size/viewport_height=1440
+window/size/viewport_width=360
+window/size/viewport_height=720
 window/size/window_width_override=360
 window/size/window_height_override=720
 window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
 window/handheld/orientation=1
 
 [input_devices]
@@ -38,3 +40,4 @@ pointing/emulate_touch_from_mouse=true
 
 renderer/rendering_method="gl_compatibility"
 renderer/rendering_method.mobile="gl_compatibility"
+textures/vram_compression/import_etc2_astc=true
