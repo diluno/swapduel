@@ -1334,6 +1334,9 @@ func _show_online() -> void:
 	_settings_panel.visible = false
 	_result_panel.visible = false
 	_pause_panel.visible = false
+	var client = _room_client()
+	if client != null:
+		client.connect_to_server(false)
 	_reveal_panel(_online_panel)
 	_set_game_chrome_visible(false, false)
 	_online_name_input.text = String(
