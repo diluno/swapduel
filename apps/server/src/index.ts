@@ -408,6 +408,39 @@ function reconnectRoom(
     'room:state',
     session.roomState,
   )
+  const recovery = rooms.getRoundRecovery(
+    roomId,
+    playerId,
+    reconnectToken,
+  )
+  if (recovery !== null) {
+    realtime.emitToConnection(
+      connectionId,
+      'round:prepare',
+      recovery.preparation,
+    )
+    if (recovery.starting !== null) {
+      realtime.emitToConnection(
+        connectionId,
+        'round:starting',
+        recovery.starting,
+      )
+    }
+    if (recovery.roundEnded !== null) {
+      realtime.emitToConnection(
+        connectionId,
+        'round:ended',
+        recovery.roundEnded,
+      )
+    }
+    if (recovery.matchEnded !== null) {
+      realtime.emitToConnection(
+        connectionId,
+        'match:ended',
+        recovery.matchEnded,
+      )
+    }
+  }
   const resuming = rooms.resumeAfterReconnect(session.roomState.roomId)
   if (resuming !== null) {
     realtime.emitToRoom(

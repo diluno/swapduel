@@ -97,6 +97,7 @@ func _test_room_client_protocol() -> void:
 		&"opponent_snapshot_received",
 		&"attack_incoming",
 		&"attack_confirmed",
+		&"top_out_accepted",
 		&"clock_synchronized",
 		&"opponent_snapshot_cleared",
 		&"desync_detected",

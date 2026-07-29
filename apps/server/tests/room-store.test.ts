@@ -134,6 +134,57 @@ describe('RoomStore', () => {
     })
   })
 
+  it('recovers the active round after reconnecting without browser state', () => {
+    const store = createStore()
+    const host = store.create('Mira', 'socket-1')
+    const guest = store.join('ROOM01', 'Noah', 'socket-2')
+    for (const player of [host, guest]) {
+      store.setReady(
+        player.roomState.roomId,
+        player.playerId,
+        player.reconnectToken,
+        true,
+      )
+    }
+    const { preparation } = store.startMatch(
+      host.roomState.roomId,
+      host.playerId,
+      host.reconnectToken,
+    )
+    for (const player of [host, guest]) {
+      store.markRoundReady(
+        player.roomState.roomId,
+        player.playerId,
+        player.reconnectToken,
+        preparation.matchId,
+        preparation.roundId,
+      )
+    }
+    store.markDisconnected('socket-1')
+    store.reconnect(
+      host.roomState.roomId,
+      host.playerId,
+      host.reconnectToken,
+      'socket-1-new',
+    )
+
+    expect(
+      store.getRoundRecovery(
+        host.roomState.roomId,
+        host.playerId,
+        host.reconnectToken,
+      ),
+    ).toEqual({
+      preparation,
+      starting: {
+        ...preparation,
+        startAt: 4_000,
+      },
+      roundEnded: null,
+      matchEnded: null,
+    })
+  })
+
   it('releases a disconnected waiting-room slot after five minutes', () => {
     const clock = { now: 1_000 }
     const store = createStore(clock)

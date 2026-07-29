@@ -86,6 +86,13 @@ export interface RoundResolution {
   matchEnded: MatchEnded | null
 }
 
+export interface RoundRecovery {
+  preparation: RoundPreparation
+  starting: RoundStarting | null
+  roundEnded: RoundEnded | null
+  matchEnded: MatchEnded | null
+}
+
 export interface DisconnectedPlayer {
   roomState: RoomState
   playerId: string
@@ -269,6 +276,29 @@ export class RoomStore {
       roomState: this.toRoomState(room),
       playerId,
       reconnectToken,
+    }
+  }
+
+  getRoundRecovery(
+    roomId: string,
+    playerId: string,
+    reconnectToken: string,
+  ): RoundRecovery | null {
+    const { room } = this.authorize(roomId, playerId, reconnectToken)
+    const activeRound = room.activeRound
+    if (activeRound === null) return null
+
+    return {
+      preparation: activeRound.preparation,
+      starting:
+        activeRound.startAt === null
+          ? null
+          : {
+              ...activeRound.preparation,
+              startAt: activeRound.startAt,
+            },
+      roundEnded: activeRound.endedResult,
+      matchEnded: room.matchEndedResult,
     }
   }
 

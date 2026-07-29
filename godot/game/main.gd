@@ -104,6 +104,7 @@ var _online_forfeit_at_ms := -1.0
 var _online_foreground_syncing := false
 var _online_was_backgrounded := false
 var _online_desync_step := -1
+var _online_status_revision := 0
 
 
 func _ready() -> void:
@@ -1202,7 +1203,6 @@ func _finish_round() -> void:
 		_result_reported = true
 		_online_topout_reported = true
 		_round_active = false
-		_clear_file(ONLINE_RECOVERY_PATH)
 		_stop_manual_raise()
 		var client = _room_client()
 		if client != null:
@@ -1320,6 +1320,7 @@ func _connect_room_client() -> void:
 	client.round_starting.connect(_on_online_round_starting)
 	client.opponent_snapshot_received.connect(_on_online_opponent_snapshot)
 	client.opponent_snapshot_cleared.connect(_on_online_opponent_snapshot_cleared)
+	client.top_out_accepted.connect(_on_online_top_out_accepted)
 	client.clock_synchronized.connect(_on_online_clock_synchronized)
 	client.desync_detected.connect(_on_online_desync_detected)
 	client.round_ended.connect(_on_online_round_ended)
@@ -1446,10 +1447,17 @@ func _on_online_room_state_changed(_room_state: Dictionary) -> void:
 
 func _on_online_error(error: Dictionary) -> void:
 	_set_online_actions_disabled(false)
+	var message := String(error.get("message", "The online request failed."))
 	_set_online_status(
-		String(error.get("message", "The online request failed.")),
+		message,
 		true,
 	)
+	if String(error.get("code", "")) == "RATE_LIMITED":
+		_expire_online_status(
+			_online_status_revision,
+			message,
+			maxi(250, int(error.get("retryAfterMs", 1000))),
+		)
 
 
 func _update_online_panel() -> void:
@@ -1566,11 +1574,27 @@ func _online_player() -> Dictionary:
 
 
 func _set_online_status(message: String, error := false) -> void:
+	_online_status_revision += 1
 	_online_status_label.text = message
 	_online_status_label.add_theme_color_override(
 		"font_color",
 		UiTheme.DANGER if error else UiTheme.INK_SOFT,
 	)
+
+
+func _expire_online_status(
+	revision: int,
+	message: String,
+	delay_ms: int,
+) -> void:
+	await get_tree().create_timer(float(delay_ms) / 1000.0).timeout
+	if (
+		revision != _online_status_revision
+		or _online_status_label.text != message
+	):
+		return
+	_set_online_status("")
+	_update_online_panel()
 
 
 func _set_online_actions_disabled(disabled: bool) -> void:
@@ -1708,6 +1732,10 @@ func _on_online_round_starting(starting: Dictionary) -> void:
 	_online_resume_at_ms = -1.0
 	if state != null and state.status != &"lost":
 		Simulation.set_paused(state, true)
+
+
+func _on_online_top_out_accepted() -> void:
+	_clear_file(ONLINE_RECOVERY_PATH)
 
 
 func _on_online_round_ended(result: Dictionary) -> void:

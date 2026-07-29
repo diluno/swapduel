@@ -49,6 +49,7 @@ type SocketResult<T> =
 let socket: Socket | null = null
 let listenersAttached = false
 let reconnectRetryTimer: ReturnType<typeof setTimeout> | null = null
+let rateLimitErrorTimer: ReturnType<typeof setTimeout> | null = null
 let clockSyncPromise: Promise<boolean> | null = null
 const attackRetryTimers = new Map<
   string,
@@ -422,6 +423,14 @@ export function useRoomSocket() {
           clearRoomSession()
         }
         errorMessage.value = error.message
+        if (error.code === 'RATE_LIMITED') {
+          if (rateLimitErrorTimer !== null) clearTimeout(rateLimitErrorTimer)
+          const message = error.message
+          rateLimitErrorTimer = setTimeout(() => {
+            rateLimitErrorTimer = null
+            if (errorMessage.value === message) errorMessage.value = ''
+          }, Math.max(250, error.retryAfterMs ?? 1_000))
+        }
       })
       socket.on('match:starting', (payload: unknown) => {
         const parsed = roundPreparationSchema.safeParse(payload)
@@ -753,7 +762,6 @@ export function useRoomSocket() {
     const activeSession = session.value ?? restoreSession()
     const preparation = roundPreparation.value
     if (activeSession === null || preparation === null) {
-      errorMessage.value = 'The round setup is missing.'
       return false
     }
 
@@ -910,6 +918,7 @@ export function useRoomSocket() {
       errorMessage.value = result.error.message
       return false
     }
+    errorMessage.value = ''
     return result.data.accepted
   }
 

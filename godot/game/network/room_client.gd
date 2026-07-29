@@ -9,6 +9,7 @@ signal round_starting(starting: Dictionary)
 signal opponent_snapshot_received(snapshot: Dictionary)
 signal attack_incoming(attack: Dictionary)
 signal attack_confirmed(attack: Dictionary)
+signal top_out_accepted
 signal desync_detected(diagnostic: Dictionary)
 signal clock_synchronized(offset_ms: float, round_trip_ms: float)
 signal opponent_snapshot_cleared
@@ -22,6 +23,7 @@ const PROTOCOL_VERSION := 1
 const DEFAULT_WEBSOCKET_URL := "wss://swapduel.dil.uno/native"
 const SESSION_PATH := "user://online-session.cfg"
 const RECONNECT_DELAYS_MS := [500, 1000, 2000, 4000, 8000]
+const TOP_OUT_RETRY_MS := 1000
 
 const STATE_DISCONNECTED: StringName = &"disconnected"
 const STATE_CONNECTING: StringName = &"connecting"
@@ -53,6 +55,9 @@ var _reconnect_at_ms := -1
 var _reconnect_session_after_open := false
 var _pending_attacks: Dictionary = {}
 var _attack_retry_at_ms := -1
+var _pending_top_out: Dictionary = {}
+var _top_out_retry_at_ms := -1
+var _top_out_request_in_flight := false
 
 
 func _ready() -> void:
@@ -95,6 +100,12 @@ func _process(_delta: float) -> void:
 	):
 		_attack_retry_at_ms = -1
 		_retry_pending_attacks()
+	if (
+		_top_out_retry_at_ms >= 0
+		and Time.get_ticks_msec() >= _top_out_retry_at_ms
+	):
+		_top_out_retry_at_ms = -1
+		_retry_pending_top_out()
 
 
 func connect_to_server(reconnect_session := false) -> Error:
@@ -253,13 +264,29 @@ func drain_incoming_attacks() -> Array[Dictionary]:
 func report_top_out() -> String:
 	if not has_saved_session() or not _has_active_round():
 		return ""
-	return _request(&"round:topout", {
-		"protocolVersion": PROTOCOL_VERSION,
-		"matchId": String(round_preparation["matchId"]),
-		"roundId": String(round_preparation["roundId"]),
-		"playerId": String(room_session["playerId"]),
-		"clientTimestamp": _unix_time_ms(),
-	})
+	if (
+		_pending_top_out.is_empty()
+		or not _is_own_round_payload(_pending_top_out)
+	):
+		_pending_top_out = {
+			"protocolVersion": PROTOCOL_VERSION,
+			"matchId": String(round_preparation["matchId"]),
+			"roundId": String(round_preparation["roundId"]),
+			"playerId": String(room_session["playerId"]),
+			"clientTimestamp": _unix_time_ms(),
+		}
+		_save_session()
+	if _top_out_request_in_flight:
+		return ""
+	if (
+		connection_state != STATE_CONNECTED
+		or _peer == null
+		or _peer.get_ready_state() != WebSocketPeer.STATE_OPEN
+	):
+		connect_to_server(true)
+		return ""
+	_top_out_request_in_flight = true
+	return _request(&"round:topout", _pending_top_out)
 
 
 func ready_for_next_round() -> String:
@@ -299,6 +326,9 @@ func clear_saved_session() -> void:
 	room_state = {}
 	_clear_round_state()
 	_pending_attacks.clear()
+	_pending_top_out = {}
+	_top_out_retry_at_ms = -1
+	_top_out_request_in_flight = false
 	var directory := DirAccess.open("user://")
 	if directory != null and directory.file_exists("online-session.cfg"):
 		directory.remove("online-session.cfg")
@@ -389,6 +419,18 @@ func _handle_response(frame: Dictionary) -> void:
 		var error = response.get("error")
 		if event == &"attack:create":
 			_schedule_attack_retry()
+		elif event == &"round:topout":
+			_top_out_request_in_flight = false
+			if (
+				error is Dictionary
+				and String(error.get("code", "")) == "RATE_LIMITED"
+			):
+				_schedule_top_out_retry(
+					maxi(
+						250,
+						int(error.get("retryAfterMs", TOP_OUT_RETRY_MS)),
+					),
+				)
 		if error is Dictionary and _should_surface_request_error(event):
 			room_error.emit(error)
 		return
@@ -399,6 +441,7 @@ func _handle_response(frame: Dictionary) -> void:
 			_apply_session(data)
 			if event == &"room:reconnect":
 				_retry_pending_attacks()
+				_retry_pending_top_out()
 	elif event == &"player:ready":
 		if data is Dictionary:
 			_apply_room_state(data)
@@ -411,6 +454,12 @@ func _handle_response(frame: Dictionary) -> void:
 	elif event == &"attack:create":
 		if data is Dictionary:
 			_confirm_attack(data)
+	elif event == &"round:topout":
+		_top_out_request_in_flight = false
+		_top_out_retry_at_ms = -1
+		_pending_top_out = {}
+		_save_session()
+		top_out_accepted.emit()
 	elif event == &"ping":
 		if data is Dictionary:
 			_apply_clock_sample(pending, data)
@@ -452,6 +501,9 @@ func _handle_event(frame: Dictionary) -> void:
 				round_result = payload.duplicate(true)
 				incoming_attacks = []
 				_pending_attacks.clear()
+				_pending_top_out = {}
+				_top_out_retry_at_ms = -1
+				_top_out_request_in_flight = false
 				_save_session()
 				round_ended.emit(round_result)
 		&"match:ended":
@@ -526,6 +578,9 @@ func _apply_round_preparation(preparation: Dictionary) -> void:
 	opponent_snapshot = {}
 	incoming_attacks = []
 	_pending_attacks.clear()
+	_pending_top_out = {}
+	_top_out_retry_at_ms = -1
+	_top_out_request_in_flight = false
 	round_result = {}
 	network_pause = {}
 	network_resume = {}
@@ -625,6 +680,31 @@ func _schedule_attack_retry(delay_ms := 750) -> void:
 	_attack_retry_at_ms = Time.get_ticks_msec() + maxi(100, delay_ms)
 
 
+func _retry_pending_top_out() -> void:
+	if _pending_top_out.is_empty():
+		_top_out_retry_at_ms = -1
+		return
+	if (
+		connection_state != STATE_CONNECTED
+		or not _has_active_round()
+		or _peer == null
+		or _peer.get_ready_state() != WebSocketPeer.STATE_OPEN
+	):
+		connect_to_server(true)
+		return
+	if _top_out_request_in_flight:
+		return
+	_top_out_request_in_flight = true
+	_request(&"round:topout", _pending_top_out)
+
+
+func _schedule_top_out_retry(delay_ms := TOP_OUT_RETRY_MS) -> void:
+	if _pending_top_out.is_empty():
+		_top_out_retry_at_ms = -1
+		return
+	_top_out_retry_at_ms = Time.get_ticks_msec() + maxi(250, delay_ms)
+
+
 func _has_active_round() -> bool:
 	return _is_round_payload(round_preparation)
 
@@ -679,6 +759,9 @@ func _clear_round_state() -> void:
 	match_result = {}
 	network_pause = {}
 	network_resume = {}
+	_pending_top_out = {}
+	_top_out_retry_at_ms = -1
+	_top_out_request_in_flight = false
 
 
 func _apply_clock_sample(pending: Dictionary, pong: Dictionary) -> void:
@@ -717,6 +800,8 @@ func _on_connected() -> void:
 func _on_disconnected() -> void:
 	_set_connection_state(STATE_DISCONNECTED)
 	_schedule_attack_retry()
+	_top_out_request_in_flight = false
+	_top_out_retry_at_ms = -1
 	if (
 		not _intentional_close
 		and (has_saved_session() or not _queued_frames.is_empty())
@@ -798,6 +883,16 @@ func _load_session() -> void:
 				and not String(attack.get("attackId", "")).is_empty()
 			):
 				_pending_attacks[String(attack["attackId"])] = attack
+	var encoded_top_out := String(
+		config.get_value("round", "pending_top_out", ""),
+	)
+	var restored_top_out = JSON.parse_string(encoded_top_out)
+	if (
+		restored_top_out is Dictionary
+		and _is_own_round_payload(restored_top_out)
+		and float(restored_top_out.get("clientTimestamp", 0.0)) > 0.0
+	):
+		_pending_top_out = restored_top_out
 
 
 func _save_session() -> void:
@@ -828,6 +923,12 @@ func _save_session() -> void:
 				"round",
 				"pending_attacks",
 				JSON.stringify(Array(_pending_attacks.values())),
+			)
+		if not _pending_top_out.is_empty():
+			config.set_value(
+				"round",
+				"pending_top_out",
+				JSON.stringify(_pending_top_out),
 			)
 	config.save(SESSION_PATH)
 

@@ -23,10 +23,6 @@ Audio="*res://game/audio/audio.gd"
 GameSettings="*res://game/settings/settings.gd"
 RoomClient="*res://game/network/room_client.gd"
 
-[swapduel]
-
-network/websocket_url="wss://swapduel.dil.uno/native"
-
 [display]
 
 window/size/viewport_width=360
@@ -46,3 +42,7 @@ pointing/emulate_touch_from_mouse=true
 renderer/rendering_method="gl_compatibility"
 renderer/rendering_method.mobile="gl_compatibility"
 textures/vram_compression/import_etc2_astc=true
+
+[swapduel]
+
+network/websocket_url="wss://swapduel.dil.uno/native"

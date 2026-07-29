@@ -27,6 +27,7 @@ const SIMULATION_SNAPSHOT_KEY = 'swapduel:simulation-snapshot'
 const SIMULATION_SNAPSHOT_INTERVAL_MS = 2_000
 const SIMULATION_SNAPSHOT_MAX_AGE_MS = 35_000
 const CHECKSUM_INTERVAL_MS = 2_000
+const TOP_OUT_RETRY_MS = 1_000
 const RENDER_INTERVAL_MS = 30
 const UI_UPDATE_INTERVAL_MS = 100
 
@@ -264,6 +265,8 @@ let resizeObserver: ResizeObserver | null = null
 let raiseTimer: ReturnType<typeof setTimeout> | null = null
 let localDisconnectTimer: ReturnType<typeof setTimeout> | null = null
 let roundConfirmationInFlight = false
+let topOutReportInFlight = false
+let topOutRetryAt = 0
 
 useHead({
   title: 'Live match · Swapduel',
@@ -321,9 +324,16 @@ async function confirmPreparedRound(): Promise<void> {
   ) {
     return
   }
+  const preparation = activePreparation.value
   roundConfirmationInFlight = true
   try {
     await nextTick()
+    if (
+      activePreparation.value?.roundId !== preparation.roundId ||
+      session.value === null
+    ) {
+      return
+    }
     acknowledged.value = await confirmRoundReady()
   } finally {
     roundConfirmationInFlight = false
@@ -344,6 +354,8 @@ watch(activePreparation, async (preparation) => {
     selected.value = null
     snapshotSequence = 0
     topOutReported.value = false
+    topOutReportInFlight = false
+    topOutRetryAt = 0
     nextRoundReady.value = false
     rematchRequested.value = false
     localConnectionPaused.value = false
@@ -457,16 +469,28 @@ function isRoundLiveAt(serverNow: number): boolean {
   return !localBlock && !remoteBlock
 }
 
-function reportTopOutIfNeeded(): void {
+async function reportTopOutIfNeeded(): Promise<void> {
   if (
     simulationState.status !== 'lost' ||
     topOutReported.value ||
+    topOutReportInFlight ||
+    Date.now() < topOutRetryAt ||
     activePreparation.value === null
   ) {
     return
   }
-  topOutReported.value = true
-  void reportTopOut()
+  topOutReportInFlight = true
+  try {
+    const accepted = await reportTopOut()
+    if (accepted) {
+      topOutReported.value = true
+      topOutRetryAt = 0
+    } else {
+      topOutRetryAt = Date.now() + TOP_OUT_RETRY_MS
+    }
+  } finally {
+    topOutReportInFlight = false
+  }
 }
 
 function sendCurrentSnapshot(timestamp: number): void {
@@ -589,7 +613,7 @@ function animationLoop(timestamp: number): void {
       accumulatorMs -= defaultGameConfig.timing.fixedStepMs
     }
     playSimulationSounds()
-    reportTopOutIfNeeded()
+    void reportTopOutIfNeeded()
     flushOutgoingAttacks(serverNow)
     sendCurrentChecksum(serverNow)
 
