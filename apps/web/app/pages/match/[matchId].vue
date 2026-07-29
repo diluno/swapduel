@@ -515,12 +515,13 @@ function sendCurrentSnapshot(timestamp: number): void {
 
 function applyIncomingAttacks(): void {
   for (const attack of drainIncomingAttacks()) {
-    simulationState = enqueueIncomingGarbage(simulationState, {
+    const nextState = enqueueIncomingGarbage(simulationState, {
       attackId: attack.attackId,
       serverSequence: attack.serverSequence,
       blocks: attack.blocks.map((block) => ({ ...block })),
     })
-    playGarbageReceived()
+    if (nextState !== simulationState) playGarbageReceived()
+    simulationState = nextState
     acknowledgeAttack(attack)
   }
 }
@@ -537,7 +538,10 @@ function playSimulationSounds(): void {
     requestRender()
   }
   playPanic(panicIntensity(simulationState))
-  if (simulationState.dangerRemainingMs !== null) {
+  if (
+    simulationState.status === 'playing' &&
+    simulationState.dangerRemainingMs !== null
+  ) {
     playDanger()
   }
 }

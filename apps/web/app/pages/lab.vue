@@ -87,7 +87,10 @@ function playSimulationSounds(): void {
   const landing = impactTracker.observe(state.value)
   if (landing !== null) playGarbageLanded(landing.cells)
   playPanic(panicIntensity(state.value))
-  if (state.value.dangerRemainingMs !== null) {
+  if (
+    state.value.status === 'playing' &&
+    state.value.dangerRemainingMs !== null
+  ) {
     playDanger()
   }
 }

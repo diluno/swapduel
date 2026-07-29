@@ -188,7 +188,12 @@ function playSimulationSounds(): void {
     requestRender()
   }
   playPanic(panicIntensity(simulationState))
-  if (simulationState.dangerRemainingMs !== null) playDanger()
+  if (
+    simulationState.status === 'playing' &&
+    simulationState.dangerRemainingMs !== null
+  ) {
+    playDanger()
+  }
 }
 
 function finishRun(): void {
