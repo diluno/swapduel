@@ -232,6 +232,21 @@ const controlEventLimiter = new FixedWindowRateLimiter({
   windowMs: 10_000,
   maxKeys: 5_000,
 })
+const checksumLimiter = new FixedWindowRateLimiter({
+  limit: 20,
+  windowMs: 10_000,
+  maxKeys: 5_000,
+})
+const attackEventLimiter = new FixedWindowRateLimiter({
+  limit: 120,
+  windowMs: 10_000,
+  maxKeys: 5_000,
+})
+const topOutLimiter = new FixedWindowRateLimiter({
+  limit: 10,
+  windowMs: 10_000,
+  maxKeys: 5_000,
+})
 const snapshotLimiter = new FixedWindowRateLimiter({
   limit: 25,
   windowMs: 1_000,
@@ -247,6 +262,21 @@ const malformedEventLimiter = new FixedWindowRateLimiter({
   windowMs: 10_000,
   maxKeys: 5_000,
 })
+const realtimeRateLimitBuckets = new Map<
+  FixedWindowRateLimiter,
+  string
+>([
+  [roomCreationLimiter, 'room-create'],
+  [roomJoinLimiter, 'room-join'],
+  [authenticationLimiter, 'authentication'],
+  [controlEventLimiter, 'control'],
+  [checksumLimiter, 'checksum'],
+  [attackEventLimiter, 'attack'],
+  [topOutLimiter, 'top-out'],
+  [snapshotLimiter, 'snapshot'],
+  [pingLimiter, 'ping'],
+  [malformedEventLimiter, 'malformed'],
+])
 const KNOWN_CLIENT_EVENTS = new Set([
   'room:create',
   'room:join',
@@ -330,6 +360,21 @@ function rateLimitError(retryAfterMs: number): RoomError {
     message: 'Too many requests. Wait a moment and try again.',
     retryAfterMs: Math.min(60_000, Math.ceil(retryAfterMs)),
   }
+}
+
+function logRealtimeRateLimit(
+  transport: 'native-websocket' | 'socket.io',
+  limiter: FixedWindowRateLimiter,
+  retryAfterMs: number,
+): void {
+  console.warn(
+    JSON.stringify({
+      event: 'realtime_rate_limited',
+      transport,
+      bucket: realtimeRateLimitBuckets.get(limiter) ?? 'unknown',
+      retryAfterMs: Math.ceil(retryAfterMs),
+    }),
+  )
 }
 
 function createRoom(displayName: string, connectionId: string): RoomSession {
@@ -732,6 +777,9 @@ const roomCleanupInterval = setInterval(() => {
   roomJoinLimiter.prune()
   authenticationLimiter.prune()
   controlEventLimiter.prune()
+  checksumLimiter.prune()
+  attackEventLimiter.prune()
+  topOutLimiter.prune()
   snapshotLimiter.prune()
   pingLimiter.prune()
   malformedEventLimiter.prune()
@@ -753,6 +801,9 @@ const roomCleanupInterval = setInterval(() => {
 
 function handleDisconnect(connectionId: string): void {
   controlEventLimiter.delete(connectionId)
+  checksumLimiter.delete(connectionId)
+  attackEventLimiter.delete(connectionId)
+  topOutLimiter.delete(connectionId)
   snapshotLimiter.delete(connectionId)
   pingLimiter.delete(connectionId)
   malformedEventLimiter.delete(connectionId)
@@ -812,6 +863,11 @@ function rejectNativeIfLimited(
 ): boolean {
   const result = limiter.consume(key)
   if (result.allowed) return false
+  logRealtimeRateLimit(
+    'native-websocket',
+    limiter,
+    result.retryAfterMs,
+  )
   nativeFailure(context, rateLimitError(result.retryAfterMs), emitError)
   return true
 }
@@ -1007,8 +1063,9 @@ function handleNativeRequest(context: NativeRequestContext): void {
         if (
           rejectNativeIfLimited(
             context,
-            controlEventLimiter,
+            checksumLimiter,
             connectionId,
+            false,
           )
         ) return
         const parsed = simulationChecksumReportSchema.safeParse(
@@ -1032,7 +1089,7 @@ function handleNativeRequest(context: NativeRequestContext): void {
         if (
           rejectNativeIfLimited(
             context,
-            controlEventLimiter,
+            attackEventLimiter,
             connectionId,
           )
         ) return
@@ -1054,8 +1111,9 @@ function handleNativeRequest(context: NativeRequestContext): void {
         if (
           rejectNativeIfLimited(
             context,
-            controlEventLimiter,
+            attackEventLimiter,
             connectionId,
+            false,
           )
         ) return
         const parsed = attackAckSchema.safeParse(request.payload)
@@ -1079,7 +1137,7 @@ function handleNativeRequest(context: NativeRequestContext): void {
         if (
           rejectNativeIfLimited(
             context,
-            controlEventLimiter,
+            topOutLimiter,
             connectionId,
           )
         ) return
@@ -1203,6 +1261,7 @@ io.on('connection', (socket) => {
     const result = limiter.consume(key)
     if (result.allowed) return false
 
+    logRealtimeRateLimit('socket.io', limiter, result.retryAfterMs)
     const error = rateLimitError(result.retryAfterMs)
     if (emitError) socket.emit('room:error', error)
     acknowledge?.({ ok: false, error })
@@ -1476,7 +1535,12 @@ io.on('connection', (socket) => {
       ) => void,
     ) => {
       if (
-        rejectIfLimited(controlEventLimiter, socket.id, acknowledge)
+        rejectIfLimited(
+          checksumLimiter,
+          socket.id,
+          acknowledge,
+          false,
+        )
       ) {
         return
       }
@@ -1509,7 +1573,7 @@ io.on('connection', (socket) => {
       acknowledge?: (result: SocketResult<OrderedAttackEvent>) => void,
     ) => {
       if (
-        rejectIfLimited(controlEventLimiter, socket.id, acknowledge)
+        rejectIfLimited(attackEventLimiter, socket.id, acknowledge)
       ) {
         return
       }
@@ -1541,7 +1605,12 @@ io.on('connection', (socket) => {
       ) => void,
     ) => {
       if (
-        rejectIfLimited(controlEventLimiter, socket.id, acknowledge)
+        rejectIfLimited(
+          attackEventLimiter,
+          socket.id,
+          acknowledge,
+          false,
+        )
       ) {
         return
       }
@@ -1578,7 +1647,7 @@ io.on('connection', (socket) => {
       ) => void,
     ) => {
       if (
-        rejectIfLimited(controlEventLimiter, socket.id, acknowledge)
+        rejectIfLimited(topOutLimiter, socket.id, acknowledge)
       ) {
         return
       }
